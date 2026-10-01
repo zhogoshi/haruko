@@ -67,51 +67,12 @@ do
     end
 end
 
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
-
 local player = Players.LocalPlayer
-if not player then
-    player = Players.PlayerAdded:Wait()
-end
 pcall(destroyOld, player:FindFirstChildOfClass("PlayerGui"))
 
 local character = player.Character
 local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
 local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-
-local function protectGui(gui)
-    local fn = protectgui or protect_gui or (syn and syn.protect_gui)
-    if fn then
-        pcall(fn, gui)
-    end
-end
-
-local function mount(gui)
-    protectGui(gui)
-    local hidden = hiddenGui()
-    if hidden then
-        local ok = pcall(function()
-            gui.Parent = hidden
-        end)
-        if ok and gui.Parent == hidden then
-            return
-        end
-    end
-    local ok = pcall(function()
-        gui.Parent = CoreGui
-    end)
-    if ok and gui.Parent == CoreGui then
-        return
-    end
-    local pg = player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui", 5)
-    if pg then
-        gui.Parent = pg
-    else
-        warn("[Haruko] Could not mount the UI")
-    end
-end
 
 --==============================================================================
 -- 2. THEME, CONFIG, STATE
@@ -530,12 +491,10 @@ local ScreenGui = new("ScreenGui", {
     ResetOnSpawn = false,
     IgnoreGuiInset = true,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-    DisplayOrder = 2147483647,
-})
-mount(ScreenGui)
+    DisplayOrder = 100,
+}, CoreGui)
 
-local HighlightFolder = new("Folder", { Name = "HarukoHighlights" })
-mount(HighlightFolder)
+local HighlightFolder = new("Folder", { Name = "HarukoHighlights" }, CoreGui)
 
 local MainFrame = new("CanvasGroup", {
     Name = "MainFrame",
