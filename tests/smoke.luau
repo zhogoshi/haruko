@@ -32,4 +32,12 @@ table.remove(lists)
 persistNow()
 assert(not __files["Haruko/locations/Smoke.json"], "removed list file was kept")
 
+local saved = HttpService:JSONDecode(__files["Haruko/configs/Default.json"])
+assert(saved.name == "Default", "config does not store its name")
+assert(saved.settings.opacity == 1, "default opacity is not 100%")
+settings.opacity = 0.7
+persistNow()
+saved = HttpService:JSONDecode(__files["Haruko/configs/Default.json"])
+assert(saved.settings.opacity == 0.7, "opacity change was not autosaved")
+
 unload()

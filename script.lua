@@ -81,7 +81,7 @@ local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 -- 2. THEME, CONFIG, STATE
 --==============================================================================
 
-local VERSION = "v4"
+local VERSION = "v2.0"
 local ACTIONS = { "Teleport", "Walk", "Glide" }
 local ACTION_SET = { Teleport = true, Walk = true, Glide = true }
 local TP_SET = { Start = true, Center = true, End = true }
@@ -115,9 +115,7 @@ local F = {
 }
 
 local settings = {
-    blur = true,
-    blurStrength = 1,
-    opacity = 0.86,
+    opacity = 1,
 }
 
 local D = {
@@ -717,10 +715,10 @@ local ToastHost = new("Frame", {
     Active = false,
 }, ScreenGui)
 
-local glass = { [MainFrame] = { radius = CORNER } }
+local panels = setmetatable({ [MainFrame] = true }, { __mode = "k" })
 
 local function applyOpacity()
-    for gui in pairs(glass) do
+    for gui in pairs(panels) do
         gui.BackgroundTransparency = 1 - settings.opacity
     end
 end
@@ -1312,7 +1310,7 @@ do
             Active = true,
         }, ToastHost)
         round(frame, 12)
-        glass[frame] = { radius = 12 }
+        panels[frame] = true
         new("UIStroke", {
             Color = meta.color,
             Transparency = 0.55,
@@ -1418,7 +1416,7 @@ do
         Active = true,
     }, DialogHost)
     round(DialogCard, 14)
-    glass[DialogCard] = { radius = 14 }
+    panels[DialogCard] = true
     hairline(DialogCard, 0.8)
     local DialogScale = new("UIScale", { Scale = 1 }, DialogCard)
 
@@ -2145,8 +2143,6 @@ end
 -- 8. OBJECTS, TOUR, SETTINGS
 --==============================================================================
 
-local exportScope = "Current list"
-
 do
     ui.AddBtn = button(pages.Objects, "Add", UDim2.fromOffset(0, 0), UDim2.fromOffset(104, 34), "primary", "plus")
     segmented(pages.Objects, UDim2.fromOffset(112, 0), UDim2.fromOffset(128, 34), { "Part", "Model" }, pickType, function(v)
@@ -2284,43 +2280,24 @@ do
     ui.SettingsW = PAGE_W - 10
 
     local SW = ui.SettingsW
-    local AppearanceCard = card(ui.SettingsScroll, UDim2.fromOffset(0, 0), UDim2.fromOffset(SW, 226),
+    local AppearanceCard = card(ui.SettingsScroll, UDim2.fromOffset(0, 0), UDim2.fromOffset(SW, 112),
         "Appearance", "Applies to the window, notifications and dialogs")
-    label(AppearanceCard, "Background blur", UDim2.fromOffset(14, 54), UDim2.fromOffset(250, 24), { font = F.Medium })
-    local blurSw = switch(AppearanceCard, UDim2.new(1, -56, 0, 54), settings.blur, function(v)
-        settings.blur = v
-    end)
     local function percent(v)
         return string.format("%d%%", math.floor(v * 100 + 0.5))
     end
-    label(AppearanceCard, "Blur strength", UDim2.fromOffset(14, 96), UDim2.fromOffset(200, 20), { font = F.Medium })
-    local BlurValue = label(AppearanceCard, percent(settings.blurStrength), UDim2.new(1, -74, 0, 96), UDim2.fromOffset(60, 20), {
+    label(AppearanceCard, "Opacity", UDim2.fromOffset(14, 54), UDim2.fromOffset(200, 20), { font = F.Medium })
+    local OpacityValue = label(AppearanceCard, percent(settings.opacity), UDim2.new(1, -74, 0, 54), UDim2.fromOffset(60, 20), {
         color = T.Muted,
         size = 12,
         align = Enum.TextXAlignment.Right,
     })
-    local blurSl = slider(AppearanceCard, UDim2.fromOffset(14, 128), SW - 28, 0.1, 1, settings.blurStrength, false, function(v)
-        settings.blurStrength = v
-        BlurValue.Text = percent(v)
-    end)
-    label(AppearanceCard, "Opacity", UDim2.fromOffset(14, 148), UDim2.fromOffset(200, 20), { font = F.Medium })
-    local OpacityValue = label(AppearanceCard, percent(settings.opacity), UDim2.new(1, -74, 0, 148), UDim2.fromOffset(60, 20), {
-        color = T.Muted,
-        size = 12,
-        align = Enum.TextXAlignment.Right,
-    })
-    local opacitySl = slider(AppearanceCard, UDim2.fromOffset(14, 180), SW - 28, 0.5, 1, settings.opacity, false, function(v)
+    local opacitySl = slider(AppearanceCard, UDim2.fromOffset(14, 86), SW - 28, 0.5, 1, settings.opacity, false, function(v)
         settings.opacity = v
         OpacityValue.Text = percent(v)
         applyOpacity()
     end)
-    label(AppearanceCard, "Blur draws a glass pane behind each panel. Turn it off if it looks wrong.",
-        UDim2.fromOffset(14, 198), UDim2.new(1, -28, 0, 20), { color = T.Muted, size = 11 })
 
     table.insert(syncers, function()
-        blurSw.Set(settings.blur)
-        blurSl.Set(settings.blurStrength)
-        BlurValue.Text = percent(settings.blurStrength)
         opacitySl.Set(settings.opacity)
         OpacityValue.Text = percent(settings.opacity)
     end)
@@ -3432,30 +3409,12 @@ local function setupStorage()
     local CONFIG_DIR = ROOT .. "/configs"
     local LOCATIONS_DIR = ROOT .. "/locations"
     local LEGACY_LOCATIONS = ROOT .. "/locations.json"
+    local LEGACY_PRESETS = "AdminPanel_Presets.json"
     local META_FILE = ROOT .. "/settings.json"
     local canFiles = (writefile and readfile and isfile) and true or false
     local meta = { autoload = nil, autosave = true, configs = {}, lists = {} }
     local activeConfig, lastConfig
     local writtenLists = {}
-
-    local function clipWrite(text)
-        local fn = setclipboard or toclipboard or set_clipboard
-            or (syn and syn.write_clipboard) or (Clipboard and Clipboard.set)
-        return fn ~= nil and (pcall(fn, text))
-    end
-
-    local function clipRead()
-        local fn = getclipboard or get_clipboard
-            or (syn and syn.get_clipboard) or (Clipboard and Clipboard.get)
-        if not fn then
-            return nil
-        end
-        local ok, result = pcall(fn)
-        if ok and type(result) == "string" and result ~= "" then
-            return result
-        end
-        return nil
-    end
 
     local function decode(text)
         local ok, data = pcall(function()
@@ -3570,6 +3529,9 @@ local function setupStorage()
 
     local function parseLists(data)
         local out = {}
+        if type(data) == "table" and type(data.lists) ~= "table" and type(data.items) == "table" then
+            data = { lists = { data } }
+        end
         if type(data) ~= "table" or type(data.lists) ~= "table" then
             return out
         end
@@ -3652,7 +3614,7 @@ local function setupStorage()
         return nil
     end
 
-    local function snapshot()
+    local function snapshot(name)
         local mods = {}
         for id, mod in pairs(modUi) do
             mods[id] = {
@@ -3661,8 +3623,9 @@ local function setupStorage()
             }
         end
         return {
-            version = 1,
-            settings = { blur = settings.blur, blurStrength = settings.blurStrength, opacity = settings.opacity },
+            version = 2,
+            name = name,
+            settings = { opacity = settings.opacity },
             modules = mods,
             motion = {
                 speed = motion.speed,
@@ -3686,8 +3649,6 @@ local function setupStorage()
         local t = type(cfg.tour) == "table" and cfg.tour or {}
         local mods = type(cfg.modules) == "table" and cfg.modules or {}
 
-        settings.blur = bool(s.blur, settings.blur)
-        settings.blurStrength = num(s.blurStrength, 0.1, 1, settings.blurStrength)
         settings.opacity = num(s.opacity, 0.5, 1, settings.opacity)
 
         motion.speed = num(m.speed, 16, 500, motion.speed)
@@ -3751,7 +3712,7 @@ local function setupStorage()
     end
 
     local function saveConfig(name)
-        local json = HttpService:JSONEncode(snapshot())
+        local json = HttpService:JSONEncode(snapshot(name))
         if not writeText(configPath(name), json) then
             return false
         end
@@ -3768,7 +3729,7 @@ local function setupStorage()
         end
         applyConfig(data)
         activeConfig = name
-        lastConfig = HttpService:JSONEncode(snapshot())
+        lastConfig = HttpService:JSONEncode(snapshot(name))
         return true
     end
 
@@ -3831,7 +3792,7 @@ local function setupStorage()
         for _, name in ipairs(listJson(LOCATIONS_DIR, meta.lists)) do
             local text = readText(locationPath(name))
             local data = decode(text or "")
-            local list = data and parseLists({ lists = { data } })[1]
+            local list = parseLists(data)[1]
             if list then
                 writtenLists[name] = text
                 table.insert(found, { list = list, order = tonumber(data.order) or math.huge })
@@ -3853,6 +3814,9 @@ local function setupStorage()
                 end)
             end
         end
+        if #out == 0 then
+            out = parseLists(decode(readText(LEGACY_PRESETS) or ""))
+        end
         return out
     end
 
@@ -3862,7 +3826,7 @@ local function setupStorage()
         end
         saveLocations()
         if meta.autosave and activeConfig then
-            local json = HttpService:JSONEncode(snapshot())
+            local json = HttpService:JSONEncode(snapshot(activeConfig))
             if json ~= lastConfig and writeText(configPath(activeConfig), json) then
                 lastConfig = json
             end
@@ -3870,11 +3834,37 @@ local function setupStorage()
     end
 
     local SW = ui.SettingsW
-    local ConfigCard = card(ui.SettingsScroll, UDim2.fromOffset(0, 238), UDim2.fromOffset(SW, 300),
+    local ConfigCard = card(ui.SettingsScroll, UDim2.fromOffset(0, 124), UDim2.fromOffset(SW, 300),
         "Configs", "Modules, binds, appearance and tour. Locations are stored apart.")
-    local nameBox = input(ConfigCard, UDim2.fromOffset(12, 52), UDim2.fromOffset(SW - 256, 32), "", "Config name")
-    local saveBtn = button(ConfigCard, "Save", UDim2.fromOffset(SW - 228, 52), UDim2.fromOffset(104, 32), "primary", "check")
-    local importBtn = button(ConfigCard, "Import", UDim2.fromOffset(SW - 116, 52), UDim2.fromOffset(104, 32), "secondary", "plus")
+    local nameBox = input(ConfigCard, UDim2.fromOffset(12, 52), UDim2.fromOffset(SW - 140, 32), "", "Config name")
+    local saveBtn = button(ConfigCard, "Save", UDim2.fromOffset(SW - 116, 52), UDim2.fromOffset(104, 32), "primary", "check")
+
+    local ShareCard = card(ui.SettingsScroll, UDim2.fromOffset(0, 436), UDim2.fromOffset(SW, 236),
+        "Share", "Select the text and press Ctrl+C, or paste with Ctrl+V and press Import")
+    local shareBox = input(ShareCard, UDim2.fromOffset(12, 52), UDim2.fromOffset(SW - 24, 124), "", "Config or location text")
+    shareBox.MultiLine = true
+    shareBox.TextWrapped = true
+    shareBox.TextYAlignment = Enum.TextYAlignment.Top
+    shareBox.TextXAlignment = Enum.TextXAlignment.Left
+    shareBox.Font = Enum.Font.Code
+    shareBox.TextSize = 12
+    shareBox.ClipsDescendants = true
+    local sharePad = shareBox:FindFirstChildOfClass("UIPadding")
+    if sharePad then
+        sharePad.PaddingTop = UDim.new(0, 8)
+        sharePad.PaddingBottom = UDim.new(0, 8)
+    end
+    local shareW = (SW - 24 - 24) / 4
+    local importBtn = button(ShareCard, "Import", UDim2.fromOffset(12, 188), UDim2.fromOffset(shareW, 34), "primary", "plus")
+    local listBtn = button(ShareCard, "Current list", UDim2.fromOffset(20 + shareW, 188), UDim2.fromOffset(shareW, 34), "secondary")
+    local allBtn = button(ShareCard, "All lists", UDim2.fromOffset(28 + shareW * 2, 188), UDim2.fromOffset(shareW, 34), "secondary")
+    local clearBtn = button(ShareCard, "Clear", UDim2.fromOffset(36 + shareW * 3, 188), UDim2.fromOffset(shareW, 34), "secondary")
+
+    local function share(text, what)
+        shareBox.Text = text
+        ui.SettingsScroll.CanvasPosition = Vector2.new(0, ShareCard.Position.Y.Offset)
+        notify(what .. " is in the Share box. Select it and press Ctrl+C", "success")
+    end
 
     local configList = new("ScrollingFrame", {
         Position = UDim2.fromOffset(12, 94),
@@ -3943,11 +3933,12 @@ local function setupStorage()
             renderConfigs()
         end)
         copy.Activated:Connect(function()
-            local text = readText(configPath(name))
-            if text and clipWrite(text) then
-                notify("Copied " .. name .. " to clipboard", "success")
+            local data = decode(readText(configPath(name)) or "")
+            if data then
+                data.name = name
+                share(HttpService:JSONEncode(data), name)
             else
-                notify("Couldn't copy " .. name, "error")
+                notify("Couldn't read " .. name, "error")
             end
         end)
         del.Activated:Connect(function()
@@ -4025,60 +4016,56 @@ local function setupStorage()
         end
     end)
 
-    importBtn.Activated:Connect(function()
-        local data = decode(clipRead() or "")
-        if not data or (type(data.settings) ~= "table" and type(data.modules) ~= "table") then
-            notify("Copy a Haruko config to the clipboard first", "warn")
+    local function importConfig(data)
+        if not canFiles then
+            notify("This executor can't write files", "error")
             return
         end
-        local typed = cleanName(nameBox.Text)
-        local name = uniqueConfigName(typed ~= "" and typed or "Imported")
+        local base = cleanName(nameBox.Text)
+        base = base ~= "" and base or cleanName(data.name)
+        local name = uniqueConfigName(base ~= "" and base or "Imported")
+        data.name = name
         if writeText(configPath(name), HttpService:JSONEncode(data)) then
             addToIndex(name)
             saveMeta()
             nameBox.Text = ""
+            shareBox.Text = ""
             renderConfigs()
             notify("Imported " .. name .. ". Press Load to apply it", "success")
         else
             notify("Failed to write the config", "error")
         end
-    end)
-
-    local LocCard = card(ui.SettingsScroll, UDim2.fromOffset(0, 550), UDim2.fromOffset(SW, 140),
-        "Locations", "One shared set, saved automatically. Share it through the clipboard.")
-    segmented(LocCard, UDim2.fromOffset(12, 52), UDim2.fromOffset(240, 30), { "Current list", "All lists" }, exportScope, function(v)
-        exportScope = v
-    end)
-    local halfW = (SW - 24 - 8) / 2
-    local copyBtn = button(LocCard, "Copy to clipboard", UDim2.fromOffset(12, 92), UDim2.fromOffset(halfW, 34), "primary")
-    local pasteBtn = button(LocCard, "Paste from clipboard", UDim2.fromOffset(20 + halfW, 92), UDim2.fromOffset(halfW, 34), "secondary")
-
-    copyBtn.Activated:Connect(function()
-        local source = (exportScope == "All lists") and lists or { currentList() }
-        if clipWrite(encodeLists(source)) then
-            notify(string.format("Copied %d list(s) to clipboard", #source), "success")
-        else
-            notify("Clipboard isn't supported by this executor", "error")
-        end
-    end)
-    pasteBtn.Activated:Connect(function()
-        local text = clipRead()
-        if not text then
-            notify("Can't read the clipboard", "warn")
-            return
-        end
-        local ok, msg = importLists(text)
-        notify(msg, ok and "success" or "error")
-    end)
-
-    local function yesNo(v)
-        return v and "yes" or "no"
     end
-    label(ui.SettingsScroll, string.format("Files: %s   |   Clipboard: %s",
-        yesNo(canFiles), yesNo(setclipboard ~= nil or toclipboard ~= nil or (syn and syn.write_clipboard) ~= nil)),
-        UDim2.fromOffset(2, 700), UDim2.fromOffset(SW, 16), { color = T.Muted, size = 12 })
-    label(ui.SettingsScroll, "workspace/Haruko keeps one file per config in configs/ and one per list in locations/. Drop files there and they load on the next start.",
-        UDim2.fromOffset(2, 718), UDim2.fromOffset(SW, 32), { color = T.Muted, size = 12, wrap = true })
+
+    importBtn.Activated:Connect(function()
+        local text = shareBox.Text
+        local data = decode(text)
+        if not data then
+            notify("Paste a Haruko config or location list first", "warn")
+        elseif type(data.settings) == "table" or type(data.modules) == "table" or type(data.motion) == "table" then
+            importConfig(data)
+        else
+            local ok, msg = importLists(text)
+            if ok then
+                shareBox.Text = ""
+            end
+            notify(msg, ok and "success" or "error")
+        end
+    end)
+    listBtn.Activated:Connect(function()
+        share(encodeLists({ currentList() }), "Current list")
+    end)
+    allBtn.Activated:Connect(function()
+        share(encodeLists(lists), string.format("%d list(s)", #lists))
+    end)
+    clearBtn.Activated:Connect(function()
+        shareBox.Text = ""
+    end)
+
+    label(ui.SettingsScroll, canFiles
+        and "workspace/Haruko keeps one file per config in configs/ and one per list in locations/. Drop files there and they load on the next start."
+        or "This executor can't write files, so nothing is saved between sessions.",
+        UDim2.fromOffset(2, 684), UDim2.fromOffset(SW, 32), { color = T.Muted, size = 12, wrap = true })
 
     ensureFolders()
     local stored = decode(readText(META_FILE) or "") or decode(readText(ROOT .. "/meta.json") or "")
@@ -4120,92 +4107,6 @@ local function setupStorage()
     end)
 end
 setupStorage()
-
-local DOF
-pcall(function()
-    DOF = new("DepthOfFieldEffect", {
-        Name = "HarukoBlur",
-        Enabled = settings.blur,
-        FarIntensity = 0,
-        NearIntensity = settings.blurStrength,
-        FocusDistance = 51.6,
-        InFocusRadius = 50,
-    }, Lighting)
-end)
-
-local function makePane()
-    return new("Part", {
-        Name = "HarukoBlurPart",
-        Anchored = true,
-        CanCollide = false,
-        CanQuery = false,
-        CanTouch = false,
-        CastShadow = false,
-        Locked = true,
-        Material = Enum.Material.Glass,
-        Color = T.Dark,
-        Transparency = 0.98,
-        Size = Vector3.new(1, 1, 0.01),
-    })
-end
-
-local function isShown(gui)
-    local cur = gui
-    while cur and cur ~= ScreenGui do
-        if cur:IsA("GuiObject") and not cur.Visible then
-            return false
-        end
-        if cur:IsA("CanvasGroup") and cur.GroupTransparency > 0.6 then
-            return false
-        end
-        cur = cur.Parent
-    end
-    return cur == ScreenGui
-end
-
--- ViewportPointToRay uses the same pixels as the GUI; each pane lies on a camera-space plane so it never rolls.
-local function fitPane(part, gui, inset, cam)
-    local pos, size = gui.AbsolutePosition, gui.AbsoluteSize
-    local x0, y0 = pos.X + inset, pos.Y + inset
-    local x1, y1 = pos.X + size.X - inset, pos.Y + size.Y - inset
-    local camCf = cam.CFrame
-    local depth = 0.25
-    local function at(x, y)
-        local dir = camCf:VectorToObjectSpace(cam:ViewportPointToRay(x, y, 0).Direction)
-        return dir * (depth / -dir.Z)
-    end
-    local a, b = at(x0, y0), at(x1, y1)
-    part.Size = Vector3.new(math.max(math.abs(b.X - a.X), 0.05), math.max(math.abs(b.Y - a.Y), 0.05), 0.01)
-    part.CFrame = camCf * CFrame.new((a.X + b.X) / 2, (a.Y + b.Y) / 2, -depth)
-end
-
-local function updateBlur()
-    local cam = workspace.CurrentCamera
-    local any = false
-    for gui, entry in pairs(glass) do
-        if not gui.Parent then
-            if entry.part then
-                entry.part:Destroy()
-            end
-            glass[gui] = nil
-        elseif settings.blur and cam and isShown(gui) then
-            any = true
-            entry.part = entry.part or makePane()
-            if entry.part.Parent ~= cam then
-                entry.part.Parent = cam
-            end
-            fitPane(entry.part, gui, entry.radius, cam)
-        elseif entry.part then
-            entry.part.Parent = nil
-        end
-    end
-    if DOF then
-        DOF.Enabled = any
-        DOF.NearIntensity = settings.blurStrength
-    end
-end
-
-RunService:BindToRenderStep("HarukoBlur", Enum.RenderPriority.Camera.Value + 1, updateBlur)
 
 local windowShown = false
 
@@ -4258,17 +4159,6 @@ local function unload()
     hideWindow(function()
         for _, c in ipairs(connections) do
             c:Disconnect()
-        end
-        pcall(function()
-            RunService:UnbindFromRenderStep("HarukoBlur")
-        end)
-        if DOF then
-            DOF:Destroy()
-        end
-        for _, entry in pairs(glass) do
-            if entry.part then
-                entry.part:Destroy()
-            end
         end
         HighlightFolder:Destroy()
         ScreenGui:Destroy()
