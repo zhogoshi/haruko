@@ -15,12 +15,35 @@ pcall(function()
     VirtualInput = game:GetService("VirtualInputManager")
 end)
 
-for _, name in ipairs({ "SpeedControlUI", "HarukoUI", "AdminHighlights", "HarukoHighlights" }) do
-    local old = CoreGui:FindFirstChild(name)
-    if old then
-        old:Destroy()
+local GUI_NAMES = { "SpeedControlUI", "HarukoUI", "AdminHighlights", "HarukoHighlights" }
+
+local function hiddenGui()
+    local fn = gethui or get_hidden_gui or get_hui
+    if type(fn) ~= "function" then
+        return nil
+    end
+    local ok, gui = pcall(fn)
+    if ok and typeof(gui) == "Instance" then
+        return gui
+    end
+    return nil
+end
+
+local function destroyOld(parent)
+    if not parent then
+        return
+    end
+    for _, name in ipairs(GUI_NAMES) do
+        local old = parent:FindFirstChild(name)
+        if old then
+            old:Destroy()
+        end
     end
 end
+
+pcall(destroyOld, CoreGui)
+pcall(destroyOld, hiddenGui())
+
 for _, stepName in ipairs({ "AdminPanelBlur", "HarukoBlur" }) do
     pcall(function()
         RunService:UnbindFromRenderStep(stepName)
@@ -44,10 +67,51 @@ do
     end
 end
 
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
 local player = Players.LocalPlayer
-local character = player.Character or player.CharacterAdded:Wait()
-local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
-local humanoid = character:WaitForChild("Humanoid")
+if not player then
+    player = Players.PlayerAdded:Wait()
+end
+pcall(destroyOld, player:FindFirstChildOfClass("PlayerGui"))
+
+local character = player.Character
+local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
+local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+local function protectGui(gui)
+    local fn = protectgui or protect_gui or (syn and syn.protect_gui)
+    if fn then
+        pcall(fn, gui)
+    end
+end
+
+local function mount(gui)
+    protectGui(gui)
+    local hidden = hiddenGui()
+    if hidden then
+        local ok = pcall(function()
+            gui.Parent = hidden
+        end)
+        if ok and gui.Parent == hidden then
+            return
+        end
+    end
+    local ok = pcall(function()
+        gui.Parent = CoreGui
+    end)
+    if ok and gui.Parent == CoreGui then
+        return
+    end
+    local pg = player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui", 5)
+    if pg then
+        gui.Parent = pg
+    else
+        warn("[Haruko] Could not mount the UI")
+    end
+end
 
 --==============================================================================
 -- 2. THEME, CONFIG, STATE
@@ -201,16 +265,24 @@ local function setFly(on)
     end
 end
 
-table.insert(connections, player.CharacterAdded:Connect(function(char)
+local function attachCharacter(char)
+    if not char then
+        return
+    end
     character = char
-    humanoidRootPart = char:WaitForChild("HumanoidRootPart")
-    humanoid = char:WaitForChild("Humanoid")
+    humanoidRootPart = char:WaitForChild("HumanoidRootPart", 8)
+    humanoid = char:WaitForChild("Humanoid", 8)
     motion.wish = nil
     collideState = {}
     if motion.flyOn and humanoid then
         humanoid.PlatformStand = true
     end
-end))
+end
+
+if character and not (humanoidRootPart and humanoid) then
+    task.spawn(attachCharacter, character)
+end
+table.insert(connections, player.CharacterAdded:Connect(attachCharacter))
 
 --==============================================================================
 -- 3. UI PRIMITIVES
@@ -459,9 +531,11 @@ local ScreenGui = new("ScreenGui", {
     IgnoreGuiInset = true,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
     DisplayOrder = 2147483647,
-}, CoreGui)
+})
+mount(ScreenGui)
 
-local HighlightFolder = new("Folder", { Name = "HarukoHighlights" }, CoreGui)
+local HighlightFolder = new("Folder", { Name = "HarukoHighlights" })
+mount(HighlightFolder)
 
 local MainFrame = new("CanvasGroup", {
     Name = "MainFrame",
@@ -471,12 +545,13 @@ local MainFrame = new("CanvasGroup", {
     BackgroundTransparency = 1 - settings.opacity,
     BorderSizePixel = 0,
     Active = true,
-    GroupTransparency = 1,
+    GroupTransparency = 0,
+    Visible = true,
     ZIndex = 1,
 }, ScreenGui)
 round(MainFrame, CORNER)
 hairline(MainFrame, 0.82)
-local WinScale = new("UIScale", { Scale = 0.95 }, MainFrame)
+local WinScale = new("UIScale", { Scale = 1 }, MainFrame)
 
 do
     local sheen = new("Frame", {
@@ -2092,8 +2167,16 @@ local function makeHighlight(fill, outline, fillTransparency)
     }, HighlightFolder)
 end
 
-hoverHighlight = makeHighlight(T.Accent, T.AccentHi, 0.55)
-local previewHighlight = makeHighlight(T.Warning, T.Warning, 0.5)
+local function tryHighlight(fill, outline, transparency)
+    local ok, h = pcall(makeHighlight, fill, outline, transparency)
+    if ok then
+        return h
+    end
+    return nil
+end
+
+hoverHighlight = tryHighlight(T.Accent, T.AccentHi, 0.55)
+local previewHighlight = tryHighlight(T.Warning, T.Warning, 0.5)
 local espHighlights = {}
 
 function refreshESP()
@@ -2230,7 +2313,7 @@ local function addObjectToList(obj)
 end
 
 table.insert(connections, RunService.RenderStepped:Connect(function()
-    if pickKind then
+    if pickKind and hoverHighlight then
         hoverHighlight.Adornee = getTargetUnderMouse()
     end
 end))
@@ -2428,11 +2511,15 @@ local function buildRow(list, item, index, isNew)
         chev.SetFacing(v and "down" or "right", true)
     end)
     head.MouseEnter:Connect(function()
-        previewHighlight.Adornee = resolvePath(item.path)
+        if previewHighlight then
+            previewHighlight.Adornee = resolvePath(item.path)
+        end
         tween(row, { BackgroundTransparency = 0.9 }, 0.12)
     end)
     head.MouseLeave:Connect(function()
-        previewHighlight.Adornee = nil
+        if previewHighlight then
+            previewHighlight.Adornee = nil
+        end
         tween(row, { BackgroundTransparency = 0.93 }, 0.15)
     end)
     goBtn.Activated:Connect(function()
@@ -2491,7 +2578,9 @@ function refreshList()
     end
 
     EmptyLabel.Visible = (#list.items == 0)
-    previewHighlight.Adornee = nil
+    if previewHighlight then
+        previewHighlight.Adornee = nil
+    end
     for index, item in ipairs(list.items) do
         buildRow(list, item, index, item == lastAddedItem)
     end
@@ -3482,7 +3571,15 @@ table.insert(connections, UserInputService.InputChanged:Connect(function(inp)
     end
 end))
 
-refreshList()
-updateTourUI()
-showPage("General", true)
-showWindow()
+local okBoot, bootErr = pcall(function()
+    refreshList()
+    updateTourUI()
+    showPage("General", true)
+    showWindow()
+end)
+if not okBoot then
+    warn("[Haruko] " .. tostring(bootErr))
+    MainFrame.Visible = true
+    MainFrame.GroupTransparency = 0
+    WinScale.Scale = 1
+end
