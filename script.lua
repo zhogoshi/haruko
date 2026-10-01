@@ -15,34 +15,37 @@ pcall(function()
     VirtualInput = game:GetService("VirtualInputManager")
 end)
 
-local GUI_NAMES = { "SpeedControlUI", "HarukoUI", "AdminHighlights", "HarukoHighlights" }
+do
+    local GUI_NAMES = { "SpeedControlUI", "HarukoUI", "AdminHighlights", "HarukoHighlights" }
 
-local function hiddenGui()
-    local fn = gethui or get_hidden_gui or get_hui
-    if type(fn) ~= "function" then
+    local function hiddenGui()
+        local fn = gethui or get_hidden_gui or get_hui
+        if type(fn) ~= "function" then
+            return nil
+        end
+        local ok, gui = pcall(fn)
+        if ok and typeof(gui) == "Instance" then
+            return gui
+        end
         return nil
     end
-    local ok, gui = pcall(fn)
-    if ok and typeof(gui) == "Instance" then
-        return gui
-    end
-    return nil
-end
 
-local function destroyOld(parent)
-    if not parent then
-        return
-    end
-    for _, name in ipairs(GUI_NAMES) do
-        local old = parent:FindFirstChild(name)
-        if old then
-            old:Destroy()
+    local function destroyOld(parent)
+        if not parent then
+            return
+        end
+        for _, name in ipairs(GUI_NAMES) do
+            local old = parent:FindFirstChild(name)
+            if old then
+                old:Destroy()
+            end
         end
     end
-end
 
-pcall(destroyOld, CoreGui)
-pcall(destroyOld, hiddenGui())
+    pcall(destroyOld, CoreGui)
+    pcall(destroyOld, Players.LocalPlayer:FindFirstChildOfClass("PlayerGui"))
+    pcall(destroyOld, hiddenGui())
+end
 
 for _, stepName in ipairs({ "AdminPanelBlur", "HarukoBlur" }) do
     pcall(function()
@@ -68,7 +71,6 @@ do
 end
 
 local player = Players.LocalPlayer
-pcall(destroyOld, player:FindFirstChildOfClass("PlayerGui"))
 
 local character = player.Character
 local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
@@ -175,6 +177,9 @@ local setPickMode
 local refreshList, refreshESP, switchList
 local goItem, cancelMovement, startTour, updateTourUI
 local hoverHighlight
+local showPage
+local pages = {}
+local ui = {}
 
 local function applyNoclip()
     if not character then
@@ -1098,99 +1103,103 @@ local function dropdown(parent, pos, size, options, initial, onChange)
     }
 end
 
-local TOAST_H, TOAST_GAP = 48, 8
-local toasts = {}
-local KIND = {
-    info = { color = T.AccentHi, icon = "info" },
-    success = { color = T.Success, icon = "check" },
-    warn = { color = T.Warning, icon = "warn" },
-    error = { color = T.Danger, icon = "close" },
-}
+local notify
 
-local function layoutToasts()
-    for i, item in ipairs(toasts) do
-        if item.alive then
-            tween(item.frame, { Position = UDim2.fromOffset(0, (i - 1) * (TOAST_H + TOAST_GAP)) }, 0.22)
+do
+    local TOAST_H, TOAST_GAP = 48, 8
+    local toasts = {}
+    local KIND = {
+        info = { color = T.AccentHi, icon = "info" },
+        success = { color = T.Success, icon = "check" },
+        warn = { color = T.Warning, icon = "warn" },
+        error = { color = T.Danger, icon = "close" },
+    }
+
+    local function layoutToasts()
+        for i, item in ipairs(toasts) do
+            if item.alive then
+                tween(item.frame, { Position = UDim2.fromOffset(0, (i - 1) * (TOAST_H + TOAST_GAP)) }, 0.22)
+            end
         end
     end
-end
 
-local function dismiss(item)
-    if not item.alive then
-        return
-    end
-    item.alive = false
-    local pos = item.frame.Position
-    tween(item.frame, { GroupTransparency = 1, Position = pos - UDim2.fromOffset(0, 12) }, 0.2)
-    local idx = table.find(toasts, item)
-    if idx then
-        table.remove(toasts, idx)
-    end
-    layoutToasts()
-    task.delay(0.22, function()
-        if item.frame then
-            item.frame:Destroy()
+    local function dismiss(item)
+        if not item.alive then
+            return
         end
-    end)
-end
-
-local function notify(text, kind)
-    kind = KIND[kind] and kind or "info"
-    local meta = KIND[kind]
-    while #toasts >= 4 do
-        dismiss(toasts[1])
+        item.alive = false
+        local pos = item.frame.Position
+        tween(item.frame, { GroupTransparency = 1, Position = pos - UDim2.fromOffset(0, 12) }, 0.2)
+        local idx = table.find(toasts, item)
+        if idx then
+            table.remove(toasts, idx)
+        end
+        layoutToasts()
+        task.delay(0.22, function()
+            if item.frame then
+                item.frame:Destroy()
+            end
+        end)
     end
 
-    local frame = new("CanvasGroup", {
-        Size = UDim2.fromOffset(340, TOAST_H),
-        BackgroundColor3 = T.Menu,
-        BackgroundTransparency = 0.12,
-        GroupTransparency = 1,
-        BorderSizePixel = 0,
-        Active = true,
-    }, ToastHost)
-    round(frame, 12)
-    hairline(frame, 0.82)
+    function notify(text, kind)
+        kind = KIND[kind] and kind or "info"
+        local meta = KIND[kind]
+        while #toasts >= 4 do
+            dismiss(toasts[1])
+        end
 
-    local accent = new("Frame", {
-        Position = UDim2.fromOffset(8, 10),
-        Size = UDim2.fromOffset(3, TOAST_H - 20),
-        BackgroundColor3 = meta.color,
-        BorderSizePixel = 0,
-    }, frame)
-    round(accent, 2)
+        local frame = new("CanvasGroup", {
+            Size = UDim2.fromOffset(340, TOAST_H),
+            BackgroundColor3 = T.Menu,
+            BackgroundTransparency = 0.12,
+            GroupTransparency = 1,
+            BorderSizePixel = 0,
+            Active = true,
+        }, ToastHost)
+        round(frame, 12)
+        hairline(frame, 0.82)
 
-    local ic = makeIcon(frame, meta.icon, 16, meta.color)
-    ic.Frame.Position = UDim2.fromOffset(20, 16)
-    label(frame, text, UDim2.fromOffset(44, 0), UDim2.new(1, -80, 1, 0), {
-        font = F.Medium,
-        size = 13,
-        truncate = Enum.TextTruncate.AtEnd,
-    })
+        local accent = new("Frame", {
+            Position = UDim2.fromOffset(8, 10),
+            Size = UDim2.fromOffset(3, TOAST_H - 20),
+            BackgroundColor3 = meta.color,
+            BorderSizePixel = 0,
+        }, frame)
+        round(accent, 2)
 
-    local item = { alive = true, frame = frame }
-    local close = new("TextButton", {
-        AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.new(1, -8, 0.5, 0),
-        Size = UDim2.fromOffset(22, 22),
-        BackgroundTransparency = 1,
-        Text = "",
-        AutoButtonColor = false,
-        ZIndex = 2,
-    }, frame)
-    local xic = makeIcon(close, "close", 10, T.Muted)
-    xic.Frame.Position = UDim2.new(0.5, -5, 0.5, -5)
-    close.Activated:Connect(function()
-        dismiss(item)
-    end)
+        local ic = makeIcon(frame, meta.icon, 16, meta.color)
+        ic.Frame.Position = UDim2.fromOffset(20, 16)
+        label(frame, text, UDim2.fromOffset(44, 0), UDim2.new(1, -80, 1, 0), {
+            font = F.Medium,
+            size = 13,
+            truncate = Enum.TextTruncate.AtEnd,
+        })
 
-    table.insert(toasts, item)
-    local y = (#toasts - 1) * (TOAST_H + TOAST_GAP)
-    frame.Position = UDim2.fromOffset(0, y - 14)
-    tween(frame, { Position = UDim2.fromOffset(0, y), GroupTransparency = 0 }, 0.26)
-    task.delay(4, function()
-        dismiss(item)
-    end)
+        local item = { alive = true, frame = frame }
+        local close = new("TextButton", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -8, 0.5, 0),
+            Size = UDim2.fromOffset(22, 22),
+            BackgroundTransparency = 1,
+            Text = "",
+            AutoButtonColor = false,
+            ZIndex = 2,
+        }, frame)
+        local xic = makeIcon(close, "close", 10, T.Muted)
+        xic.Frame.Position = UDim2.new(0.5, -5, 0.5, -5)
+        close.Activated:Connect(function()
+            dismiss(item)
+        end)
+
+        table.insert(toasts, item)
+        local y = (#toasts - 1) * (TOAST_H + TOAST_GAP)
+        frame.Position = UDim2.fromOffset(0, y - 14)
+        tween(frame, { Position = UDim2.fromOffset(0, y), GroupTransparency = 0 }, 0.26)
+        task.delay(4, function()
+            dismiss(item)
+        end)
+    end
 end
 
 local function setStatus(text, kind)
@@ -1200,334 +1209,341 @@ end
 local dialogBusy = false
 local dialogGen = 0
 local dialogFinish = function() end
+local confirm
 
-local Dimmer = new("TextButton", {
-    Size = UDim2.fromScale(1, 1),
-    BackgroundColor3 = Color3.new(0, 0, 0),
-    BackgroundTransparency = 1,
-    Text = "",
-    AutoButtonColor = false,
-    BorderSizePixel = 0,
-    ZIndex = 1,
-}, DialogHost)
+do
+    local dialogGen = 0
 
-local DialogCard = new("CanvasGroup", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Size = UDim2.fromOffset(348, 172),
-    BackgroundColor3 = T.Window,
-    BackgroundTransparency = 0.04,
-    BorderSizePixel = 0,
-    ZIndex = 2,
-    Active = true,
-}, DialogHost)
-round(DialogCard, 14)
-hairline(DialogCard, 0.8)
-local DialogScale = new("UIScale", { Scale = 1 }, DialogCard)
+    local Dimmer = new("TextButton", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BackgroundTransparency = 1,
+        Text = "",
+        AutoButtonColor = false,
+        BorderSizePixel = 0,
+        ZIndex = 1,
+    }, DialogHost)
 
-local DialogTitle = label(DialogCard, "Confirm", UDim2.fromOffset(18, 16), UDim2.new(1, -36, 0, 22), {
-    font = F.Bold,
-    size = 16,
-})
-local DialogBody = label(DialogCard, "", UDim2.fromOffset(18, 42), UDim2.fromOffset(312, 68), {
-    color = T.Muted,
-    size = 13,
-    wrap = true,
-    yalign = Enum.TextYAlignment.Top,
-})
-local DialogCancel = button(DialogCard, "Cancel", UDim2.fromOffset(16, 124), UDim2.fromOffset(150, 32), "secondary")
-local DialogConfirm = button(DialogCard, "Confirm", UDim2.fromOffset(182, 124), UDim2.fromOffset(150, 32), "danger")
+    local DialogCard = new("CanvasGroup", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Size = UDim2.fromOffset(348, 172),
+        BackgroundColor3 = T.Window,
+        BackgroundTransparency = 0.04,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        Active = true,
+    }, DialogHost)
+    round(DialogCard, 14)
+    hairline(DialogCard, 0.8)
+    local DialogScale = new("UIScale", { Scale = 1 }, DialogCard)
 
-local function confirm(opts)
-    if dialogBusy then
-        return false
-    end
-    closeDropdown(true)
-    dialogBusy = true
-    dialogGen += 1
-    local gen = dialogGen
-    local event = Instance.new("BindableEvent")
+    local DialogTitle = label(DialogCard, "Confirm", UDim2.fromOffset(18, 16), UDim2.new(1, -36, 0, 22), {
+        font = F.Bold,
+        size = 16,
+    })
+    local DialogBody = label(DialogCard, "", UDim2.fromOffset(18, 42), UDim2.fromOffset(312, 68), {
+        color = T.Muted,
+        size = 13,
+        wrap = true,
+        yalign = Enum.TextYAlignment.Top,
+    })
+    local DialogCancel = button(DialogCard, "Cancel", UDim2.fromOffset(16, 124), UDim2.fromOffset(150, 32), "secondary")
+    local DialogConfirm = button(DialogCard, "Confirm", UDim2.fromOffset(182, 124), UDim2.fromOffset(150, 32), "danger")
 
-    DialogTitle.Text = opts.title or "Confirm"
-    DialogBody.Text = opts.body or ""
-    btnText(DialogConfirm, opts.confirmText or "Confirm")
-    setButtonStyle(DialogConfirm, opts.danger and "danger" or "primary")
-
-    local p, s = MainFrame.AbsolutePosition, MainFrame.AbsoluteSize
-    DialogCard.Position = UDim2.fromOffset(p.X + s.X / 2, p.Y + s.Y / 2)
-    DialogHost.Visible = true
-    Dimmer.BackgroundTransparency = 1
-    DialogCard.GroupTransparency = 1
-    DialogScale.Scale = 0.96
-    tween(Dimmer, { BackgroundTransparency = 0.45 }, 0.2)
-    tween(DialogCard, { GroupTransparency = 0 }, 0.2)
-    tween(DialogScale, { Scale = 1 }, 0.22)
-
-    dialogFinish = function(value)
-        if gen ~= dialogGen then
-            return
+    function confirm(opts)
+        if dialogBusy then
+            return false
         end
+        closeDropdown(true)
+        dialogBusy = true
         dialogGen += 1
-        tween(Dimmer, { BackgroundTransparency = 1 }, 0.16)
-        tween(DialogCard, { GroupTransparency = 1 }, 0.16)
-        tween(DialogScale, { Scale = 0.96 }, 0.16)
-        task.delay(0.18, function()
-            DialogHost.Visible = false
-            dialogBusy = false
-            event:Fire(value)
-        end)
+        local gen = dialogGen
+        local event = Instance.new("BindableEvent")
+
+        DialogTitle.Text = opts.title or "Confirm"
+        DialogBody.Text = opts.body or ""
+        btnText(DialogConfirm, opts.confirmText or "Confirm")
+        setButtonStyle(DialogConfirm, opts.danger and "danger" or "primary")
+
+        local p, s = MainFrame.AbsolutePosition, MainFrame.AbsoluteSize
+        DialogCard.Position = UDim2.fromOffset(p.X + s.X / 2, p.Y + s.Y / 2)
+        DialogHost.Visible = true
+        Dimmer.BackgroundTransparency = 1
+        DialogCard.GroupTransparency = 1
+        DialogScale.Scale = 0.96
+        tween(Dimmer, { BackgroundTransparency = 0.45 }, 0.2)
+        tween(DialogCard, { GroupTransparency = 0 }, 0.2)
+        tween(DialogScale, { Scale = 1 }, 0.22)
+
+        dialogFinish = function(value)
+            if gen ~= dialogGen then
+                return
+            end
+            dialogGen += 1
+            tween(Dimmer, { BackgroundTransparency = 1 }, 0.16)
+            tween(DialogCard, { GroupTransparency = 1 }, 0.16)
+            tween(DialogScale, { Scale = 0.96 }, 0.16)
+            task.delay(0.18, function()
+                DialogHost.Visible = false
+                dialogBusy = false
+                event:Fire(value)
+            end)
+        end
+
+        local value = event.Event:Wait()
+        event:Destroy()
+        return value
     end
 
-    local value = event.Event:Wait()
-    event:Destroy()
-    return value
+    Dimmer.Activated:Connect(function()
+        dialogFinish(false)
+    end)
+    DialogCancel.Activated:Connect(function()
+        dialogFinish(false)
+    end)
+    DialogConfirm.Activated:Connect(function()
+        dialogFinish(true)
+    end)
 end
-
-Dimmer.Activated:Connect(function()
-    dialogFinish(false)
-end)
-DialogCancel.Activated:Connect(function()
-    dialogFinish(false)
-end)
-DialogConfirm.Activated:Connect(function()
-    dialogFinish(true)
-end)
 
 --==============================================================================
 -- 6. SHELL
 --==============================================================================
 
-local Sidebar = new("Frame", {
-    Name = "Sidebar",
-    Size = UDim2.new(0, SIDEBAR_W, 1, 0),
-    BackgroundColor3 = T.Dark,
-    BackgroundTransparency = 0.55,
-    BorderSizePixel = 0,
-}, MainFrame)
+do
+    local Sidebar = new("Frame", {
+        Name = "Sidebar",
+        Size = UDim2.new(0, SIDEBAR_W, 1, 0),
+        BackgroundColor3 = T.Dark,
+        BackgroundTransparency = 0.55,
+        BorderSizePixel = 0,
+    }, MainFrame)
 
-new("Frame", {
-    Size = UDim2.new(0, 1, 1, 0),
-    Position = UDim2.new(1, -1, 0, 0),
-    BackgroundColor3 = T.White,
-    BackgroundTransparency = 0.92,
-    BorderSizePixel = 0,
-}, Sidebar)
-
-local DragStrip = new("Frame", {
-    Size = UDim2.new(1, 0, 0, 92),
-    BackgroundTransparency = 1,
-    Active = true,
-}, Sidebar)
-
-local function trafficLight(x, color)
-    local b = new("TextButton", {
-        Position = UDim2.fromOffset(x, 14),
-        Size = UDim2.fromOffset(12, 12),
-        BackgroundColor3 = color,
-        Text = "",
-        AutoButtonColor = false,
+    new("Frame", {
+        Size = UDim2.new(0, 1, 1, 0),
+        Position = UDim2.new(1, -1, 0, 0),
+        BackgroundColor3 = T.White,
+        BackgroundTransparency = 0.92,
         BorderSizePixel = 0,
     }, Sidebar)
-    round(b, 6)
-    b.MouseEnter:Connect(function() tween(b, { BackgroundTransparency = 0.25 }, 0.1) end)
-    b.MouseLeave:Connect(function() tween(b, { BackgroundTransparency = 0 }, 0.1) end)
-    return b
-end
-local CloseDot = trafficLight(14, Color3.fromRGB(255, 95, 87))
-local HideDot = trafficLight(32, Color3.fromRGB(254, 188, 46))
-local CenterDot = trafficLight(50, Color3.fromRGB(40, 200, 64))
 
-local logo = new("Frame", {
-    Position = UDim2.fromOffset(14, 40),
-    Size = UDim2.fromOffset(28, 28),
-    BackgroundColor3 = T.Accent,
-    BorderSizePixel = 0,
-}, DragStrip)
-round(logo, 8)
-local mark = makeIcon(logo, "mark", 16, T.White)
-mark.Frame.Position = UDim2.new(0.5, -8, 0.5, -8)
+    ui.DragStrip = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 92),
+        BackgroundTransparency = 1,
+        Active = true,
+    }, Sidebar)
 
-local TitleLabel = label(DragStrip, "Haruko", UDim2.fromOffset(50, 44), UDim2.fromOffset(0, 18), {
-    font = F.Bold,
-    size = 15,
-    autosize = Enum.AutomaticSize.X,
-    yalign = Enum.TextYAlignment.Top,
-})
-local VersionLabel = label(DragStrip, VERSION, UDim2.fromOffset(112, 44), UDim2.fromOffset(0, 18), {
-    color = T.Muted,
-    size = 11,
-    autosize = Enum.AutomaticSize.X,
-    yalign = Enum.TextYAlignment.Top,
-})
-local function placeVersion()
-    local w = TitleLabel.TextBounds.X
-    if w < 1 then
-        w = TitleLabel.AbsoluteSize.X
+    local function trafficLight(x, color)
+        local b = new("TextButton", {
+            Position = UDim2.fromOffset(x, 14),
+            Size = UDim2.fromOffset(12, 12),
+            BackgroundColor3 = color,
+            Text = "",
+            AutoButtonColor = false,
+            BorderSizePixel = 0,
+        }, Sidebar)
+        round(b, 6)
+        b.MouseEnter:Connect(function() tween(b, { BackgroundTransparency = 0.25 }, 0.1) end)
+        b.MouseLeave:Connect(function() tween(b, { BackgroundTransparency = 0 }, 0.1) end)
+        return b
     end
-    VersionLabel.Position = UDim2.fromOffset(50 + w + 6, 44)
-end
-TitleLabel:GetPropertyChangedSignal("TextBounds"):Connect(placeVersion)
-task.defer(placeVersion)
+    ui.CloseDot = trafficLight(14, Color3.fromRGB(255, 95, 87))
+    ui.HideDot = trafficLight(32, Color3.fromRGB(254, 188, 46))
+    ui.CenterDot = trafficLight(50, Color3.fromRGB(40, 200, 64))
 
-local TabList = new("Frame", {
-    Position = UDim2.fromOffset(0, 100),
-    Size = UDim2.new(1, 0, 1, -170),
-    BackgroundTransparency = 1,
-}, Sidebar)
-new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, TabList)
-new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, TabList)
+    local logo = new("Frame", {
+        Position = UDim2.fromOffset(14, 40),
+        Size = UDim2.fromOffset(28, 28),
+        BackgroundColor3 = T.Accent,
+        BorderSizePixel = 0,
+    }, ui.DragStrip)
+    round(logo, 8)
+    local mark = makeIcon(logo, "mark", 16, T.White)
+    mark.Frame.Position = UDim2.new(0.5, -8, 0.5, -8)
 
-new("Frame", {
-    Position = UDim2.new(0, 14, 1, -66),
-    Size = UDim2.new(1, -28, 0, 1),
-    BackgroundColor3 = T.White,
-    BackgroundTransparency = 0.92,
-    BorderSizePixel = 0,
-}, Sidebar)
-
-local FooterDot = new("Frame", {
-    Position = UDim2.new(0, 16, 1, -50),
-    Size = UDim2.fromOffset(8, 8),
-    BackgroundColor3 = T.Muted,
-    BorderSizePixel = 0,
-}, Sidebar)
-round(FooterDot, 4)
-local FooterText = label(Sidebar, "Tour idle", UDim2.new(0, 32, 1, -56), UDim2.new(1, -40, 0, 20), {
-    color = T.Muted,
-    size = 12,
-    font = F.Medium,
-})
-label(Sidebar, "RightShift: hide / show", UDim2.new(0, 16, 1, -34), UDim2.new(1, -24, 0, 24), {
-    color = T.Muted,
-    size = 11,
-})
-
-local Topbar = new("Frame", {
-    Position = UDim2.fromOffset(SIDEBAR_W, 0),
-    Size = UDim2.new(1, -SIDEBAR_W, 0, 56),
-    BackgroundTransparency = 1,
-    Active = true,
-}, MainFrame)
-local PageTitle = label(Topbar, "", UDim2.fromOffset(16, 10), UDim2.new(1, -32, 0, 22), { font = F.Bold, size = 18 })
-local PageSubtitle = label(Topbar, "", UDim2.fromOffset(16, 33), UDim2.new(1, -32, 0, 16), { color = T.Muted, size = 12 })
-new("Frame", {
-    Position = UDim2.new(0, 16, 1, -1),
-    Size = UDim2.new(1, -32, 0, 1),
-    BackgroundColor3 = T.White,
-    BackgroundTransparency = 0.92,
-    BorderSizePixel = 0,
-}, Topbar)
-
-local Content = new("Frame", {
-    Position = UDim2.fromOffset(SIDEBAR_W + 16, 62),
-    Size = UDim2.fromOffset(PAGE_W, PAGE_H),
-    BackgroundTransparency = 1,
-    ClipsDescendants = true,
-}, MainFrame)
-
-local PAGE_INFO = {
-    General = { "General", "Modules you can toggle and bind" },
-    Objects = { "Objects", "Pick objects in the world and set an action for each" },
-    Tour = { "Tour", "Defaults for new objects and the automatic tour" },
-    Presets = { "Presets", "Back up or share your lists" },
-    Settings = { "Settings", "Window material and background blur" },
-}
-
-local pages, tabs = {}, {}
-local currentPage
-local pageToken = 0
-
-local function showPage(name, instant)
-    if currentPage == name then
-        return
+    local TitleLabel = label(ui.DragStrip, "Haruko", UDim2.fromOffset(50, 44), UDim2.fromOffset(0, 18), {
+        font = F.Bold,
+        size = 15,
+        autosize = Enum.AutomaticSize.X,
+        yalign = Enum.TextYAlignment.Top,
+    })
+    local VersionLabel = label(ui.DragStrip, VERSION, UDim2.fromOffset(112, 44), UDim2.fromOffset(0, 18), {
+        color = T.Muted,
+        size = 11,
+        autosize = Enum.AutomaticSize.X,
+        yalign = Enum.TextYAlignment.Top,
+    })
+    local function placeVersion()
+        local w = TitleLabel.TextBounds.X
+        if w < 1 then
+            w = TitleLabel.AbsoluteSize.X
+        end
+        VersionLabel.Position = UDim2.fromOffset(50 + w + 6, 44)
     end
-    closeDropdown(true)
-    pageToken += 1
-    local token = pageToken
-    local prev = currentPage and pages[currentPage]
-    currentPage = name
+    TitleLabel:GetPropertyChangedSignal("TextBounds"):Connect(placeVersion)
+    task.defer(placeVersion)
 
-    for tabName, tab in pairs(tabs) do
-        local active = (tabName == name)
-        tween(tab.button, {
+    local TabList = new("Frame", {
+        Position = UDim2.fromOffset(0, 100),
+        Size = UDim2.new(1, 0, 1, -170),
+        BackgroundTransparency = 1,
+    }, Sidebar)
+    new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, TabList)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, TabList)
+
+    new("Frame", {
+        Position = UDim2.new(0, 14, 1, -66),
+        Size = UDim2.new(1, -28, 0, 1),
+        BackgroundColor3 = T.White,
+        BackgroundTransparency = 0.92,
+        BorderSizePixel = 0,
+    }, Sidebar)
+
+    ui.FooterDot = new("Frame", {
+        Position = UDim2.new(0, 16, 1, -50),
+        Size = UDim2.fromOffset(8, 8),
+        BackgroundColor3 = T.Muted,
+        BorderSizePixel = 0,
+    }, Sidebar)
+    round(ui.FooterDot, 4)
+    ui.FooterText = label(Sidebar, "Tour idle", UDim2.new(0, 32, 1, -56), UDim2.new(1, -40, 0, 20), {
+        color = T.Muted,
+        size = 12,
+        font = F.Medium,
+    })
+    label(Sidebar, "RightShift: hide / show", UDim2.new(0, 16, 1, -34), UDim2.new(1, -24, 0, 24), {
+        color = T.Muted,
+        size = 11,
+    })
+
+    ui.Topbar = new("Frame", {
+        Position = UDim2.fromOffset(SIDEBAR_W, 0),
+        Size = UDim2.new(1, -SIDEBAR_W, 0, 56),
+        BackgroundTransparency = 1,
+        Active = true,
+    }, MainFrame)
+    local PageTitle = label(ui.Topbar, "", UDim2.fromOffset(16, 10), UDim2.new(1, -32, 0, 22), { font = F.Bold, size = 18 })
+    local PageSubtitle = label(ui.Topbar, "", UDim2.fromOffset(16, 33), UDim2.new(1, -32, 0, 16), { color = T.Muted, size = 12 })
+    new("Frame", {
+        Position = UDim2.new(0, 16, 1, -1),
+        Size = UDim2.new(1, -32, 0, 1),
+        BackgroundColor3 = T.White,
+        BackgroundTransparency = 0.92,
+        BorderSizePixel = 0,
+    }, ui.Topbar)
+
+    local Content = new("Frame", {
+        Position = UDim2.fromOffset(SIDEBAR_W + 16, 62),
+        Size = UDim2.fromOffset(PAGE_W, PAGE_H),
+        BackgroundTransparency = 1,
+        ClipsDescendants = true,
+    }, MainFrame)
+
+    local PAGE_INFO = {
+        General = { "General", "Modules you can toggle and bind" },
+        Objects = { "Objects", "Pick objects in the world and set an action for each" },
+        Tour = { "Tour", "Defaults for new objects and the automatic tour" },
+        Presets = { "Presets", "Back up or share your lists" },
+        Settings = { "Settings", "Window material and background blur" },
+    }
+
+    local tabs = {}
+    local currentPage
+    local pageToken = 0
+
+    function showPage(name, instant)
+        if currentPage == name then
+            return
+        end
+        closeDropdown(true)
+        pageToken += 1
+        local token = pageToken
+        local prev = currentPage and pages[currentPage]
+        currentPage = name
+
+        for tabName, tab in pairs(tabs) do
+            local active = (tabName == name)
+            tween(tab.button, {
+                BackgroundColor3 = T.Accent,
+                BackgroundTransparency = active and 0.1 or 1,
+            }, 0.2)
+            tween(tab.text, { TextColor3 = active and T.Text or T.Muted }, 0.2)
+            tab.icon.SetColor(active and T.Text or T.Muted, true)
+        end
+
+        PageTitle.Text = PAGE_INFO[name][1]
+        PageSubtitle.Text = PAGE_INFO[name][2]
+
+        local page = pages[name]
+        if prev then
+            tween(prev, { Position = UDim2.fromOffset(0, 8) }, 0.12)
+            task.delay(0.13, function()
+                if token == pageToken and prev ~= page then
+                    prev.Visible = false
+                    prev.Position = UDim2.fromOffset(0, 0)
+                end
+            end)
+        end
+
+        page.Visible = true
+        if instant then
+            page.Position = UDim2.fromOffset(0, 0)
+        else
+            page.Position = UDim2.fromOffset(0, 10)
+            tween(page, { Position = UDim2.fromOffset(0, 0) }, 0.24)
+        end
+    end
+
+    local function addPage(name, iconKind, order)
+        local btn = new("TextButton", {
+            Size = UDim2.new(1, 0, 0, 34),
             BackgroundColor3 = T.Accent,
-            BackgroundTransparency = active and 0.1 or 1,
-        }, 0.2)
-        tween(tab.text, { TextColor3 = active and T.Text or T.Muted }, 0.2)
-        tab.icon.SetColor(active and T.Text or T.Muted, true)
-    end
+            BackgroundTransparency = 1,
+            Text = "",
+            AutoButtonColor = false,
+            BorderSizePixel = 0,
+            LayoutOrder = order,
+        }, TabList)
+        round(btn, 8)
 
-    PageTitle.Text = PAGE_INFO[name][1]
-    PageSubtitle.Text = PAGE_INFO[name][2]
+        local icon = makeIcon(btn, iconKind, 16, T.Muted)
+        icon.Frame.Position = UDim2.new(0, 12, 0.5, -8)
+        local text = label(btn, name, UDim2.fromOffset(38, 0), UDim2.new(1, -44, 1, 0), { font = F.Medium, color = T.Muted })
+        tabs[name] = { button = btn, text = text, icon = icon }
 
-    local page = pages[name]
-    if prev then
-        tween(prev, { Position = UDim2.fromOffset(0, 8) }, 0.12)
-        task.delay(0.13, function()
-            if token == pageToken and prev ~= page then
-                prev.Visible = false
-                prev.Position = UDim2.fromOffset(0, 0)
+        btn.MouseEnter:Connect(function()
+            if currentPage ~= name then
+                tween(btn, { BackgroundColor3 = T.White, BackgroundTransparency = 0.94 }, 0.12)
             end
         end)
+        btn.MouseLeave:Connect(function()
+            if currentPage ~= name then
+                tween(btn, { BackgroundTransparency = 1 }, 0.15)
+            else
+                tween(btn, { BackgroundColor3 = T.Accent, BackgroundTransparency = 0.1 }, 0.15)
+            end
+        end)
+        btn.Activated:Connect(function()
+            btn.BackgroundColor3 = T.Accent
+            showPage(name)
+        end)
+
+        local page = new("Frame", {
+            Name = name,
+            Size = UDim2.fromScale(1, 1),
+            BackgroundTransparency = 1,
+            Visible = false,
+        }, Content)
+        pages[name] = page
+        return page
     end
 
-    page.Visible = true
-    if instant then
-        page.Position = UDim2.fromOffset(0, 0)
-    else
-        page.Position = UDim2.fromOffset(0, 10)
-        tween(page, { Position = UDim2.fromOffset(0, 0) }, 0.24)
-    end
+    addPage("General", "grid", 1)
+    addPage("Objects", "cube", 2)
+    addPage("Tour", "target", 3)
+    addPage("Presets", "lines", 4)
+    addPage("Settings", "gear", 5)
 end
-
-local function addPage(name, iconKind, order)
-    local btn = new("TextButton", {
-        Size = UDim2.new(1, 0, 0, 34),
-        BackgroundColor3 = T.Accent,
-        BackgroundTransparency = 1,
-        Text = "",
-        AutoButtonColor = false,
-        BorderSizePixel = 0,
-        LayoutOrder = order,
-    }, TabList)
-    round(btn, 8)
-
-    local icon = makeIcon(btn, iconKind, 16, T.Muted)
-    icon.Frame.Position = UDim2.new(0, 12, 0.5, -8)
-    local text = label(btn, name, UDim2.fromOffset(38, 0), UDim2.new(1, -44, 1, 0), { font = F.Medium, color = T.Muted })
-    tabs[name] = { button = btn, text = text, icon = icon }
-
-    btn.MouseEnter:Connect(function()
-        if currentPage ~= name then
-            tween(btn, { BackgroundColor3 = T.White, BackgroundTransparency = 0.94 }, 0.12)
-        end
-    end)
-    btn.MouseLeave:Connect(function()
-        if currentPage ~= name then
-            tween(btn, { BackgroundTransparency = 1 }, 0.15)
-        else
-            tween(btn, { BackgroundColor3 = T.Accent, BackgroundTransparency = 0.1 }, 0.15)
-        end
-    end)
-    btn.Activated:Connect(function()
-        btn.BackgroundColor3 = T.Accent
-        showPage(name)
-    end)
-
-    local page = new("Frame", {
-        Name = name,
-        Size = UDim2.fromScale(1, 1),
-        BackgroundTransparency = 1,
-        Visible = false,
-    }, Content)
-    pages[name] = page
-    return page
-end
-
-local GeneralPage = addPage("General", "grid", 1)
-local ObjectsPage = addPage("Objects", "cube", 2)
-local TourPage = addPage("Tour", "target", 3)
-local PresetsPage = addPage("Presets", "lines", 4)
-local SettingsPage = addPage("Settings", "gear", 5)
 
 --==============================================================================
 -- 7. MODULES & GENERAL
@@ -1558,459 +1574,464 @@ local function setTeleport(on)
     end
 end
 
-local MOD_HEAD = 62
-local colGap = 8
-local colW = math.floor((PAGE_W - colGap - 12) / 2)
+do
+    local MOD_HEAD = 62
+    local colGap = 8
+    local colW = math.floor((PAGE_W - colGap - 12) / 2)
 
-local GeneralScroll = new("ScrollingFrame", {
-    Size = UDim2.fromScale(1, 1),
-    BackgroundTransparency = 1,
-    BorderSizePixel = 0,
-    ScrollBarThickness = 3,
-    ScrollBarImageColor3 = T.Accent,
-    CanvasSize = UDim2.new(),
-    AutomaticCanvasSize = Enum.AutomaticSize.Y,
-}, GeneralPage)
+    local GeneralScroll = new("ScrollingFrame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = T.Accent,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    }, pages.General)
 
-local moduleHolder = new("Frame", {
-    Size = UDim2.new(1, -4, 0, 0),
-    AutomaticSize = Enum.AutomaticSize.Y,
-    BackgroundTransparency = 1,
-}, GeneralScroll)
-new("UIPadding", { PaddingBottom = UDim.new(0, 8) }, moduleHolder)
-
-local function column(x)
-    local f = new("Frame", {
-        Position = UDim2.fromOffset(x, 0),
-        Size = UDim2.fromOffset(colW, 0),
+    local moduleHolder = new("Frame", {
+        Size = UDim2.new(1, -4, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
-    }, moduleHolder)
-    new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, f)
-    return f
-end
+    }, GeneralScroll)
+    new("UIPadding", { PaddingBottom = UDim.new(0, 8) }, moduleHolder)
 
-local leftCol = column(0)
-local rightCol = column(colW + colGap)
-
-local function buildModule(parent, order, def)
-    local opened = false
-    local bodyH = def.body or 0
-    local cardFrame = new("Frame", {
-        Size = UDim2.new(1, 0, 0, MOD_HEAD),
-        BackgroundColor3 = T.White,
-        BackgroundTransparency = 0.93,
-        BorderSizePixel = 0,
-        ClipsDescendants = true,
-        LayoutOrder = order,
-    }, parent)
-    round(cardFrame, 10)
-    hairline(cardFrame, 0.92)
-
-    local head = new("Frame", {
-        Size = UDim2.new(1, 0, 0, MOD_HEAD),
-        BackgroundTransparency = 1,
-    }, cardFrame)
-
-    local textX = 12
-    local chev
-    if bodyH > 0 then
-        chev = makeIcon(head, "chevron", 12, T.Muted)
-        chev.Frame.Position = UDim2.fromOffset(10, 25)
-        chev.SetFacing("right", false)
-        textX = 28
-    end
-
-    local icon = makeIcon(head, def.icon, 16, T.Text)
-    icon.Frame.Position = UDim2.fromOffset(textX, 23)
-    local nameX = textX + 22
-    label(head, def.name, UDim2.fromOffset(nameX, 12), UDim2.new(1, -nameX - 118, 0, 18), {
-        font = F.Bold,
-        size = 13,
-        truncate = Enum.TextTruncate.AtEnd,
-    })
-    label(head, def.desc, UDim2.fromOffset(nameX, 32), UDim2.new(1, -nameX - 118, 0, 16), {
-        color = T.Muted,
-        size = 11,
-        truncate = Enum.TextTruncate.AtEnd,
-    })
-
-    if bodyH > 0 then
-        local hit = new("TextButton", {
-            Size = UDim2.new(1, -112, 1, 0),
+    local function column(x)
+        local f = new("Frame", {
+            Position = UDim2.fromOffset(x, 0),
+            Size = UDim2.fromOffset(colW, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
             BackgroundTransparency = 1,
-            Text = "",
-            AutoButtonColor = false,
-        }, head)
-        hit.MouseEnter:Connect(function()
-            tween(cardFrame, { BackgroundTransparency = 0.9 }, 0.12)
-        end)
-        hit.MouseLeave:Connect(function()
-            tween(cardFrame, { BackgroundTransparency = 0.93 }, 0.15)
-        end)
-        hit.Activated:Connect(function()
-            opened = not opened
-            tween(cardFrame, { Size = UDim2.new(1, 0, 0, opened and (MOD_HEAD + bodyH) or MOD_HEAD) }, 0.24)
-            chev.SetFacing(opened and "down" or "right", true)
-        end)
+        }, moduleHolder)
+        new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, f)
+        return f
     end
 
-    local chip = new("TextButton", {
-        AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.new(1, -54, 0.5, 0),
-        Size = UDim2.fromOffset(48, 22),
-        BackgroundColor3 = T.White,
-        BackgroundTransparency = 0.9,
-        Text = "None",
-        TextColor3 = T.Muted,
-        Font = F.Medium,
-        TextSize = 11,
-        AutoButtonColor = false,
-        TextTruncate = Enum.TextTruncate.AtEnd,
-        ZIndex = 4,
-        BorderSizePixel = 0,
-    }, head)
-    round(chip, 6)
+    local leftCol = column(0)
+    local rightCol = column(colW + colGap)
 
-    local sw = switch(head, UDim2.new(1, -46, 0.5, -12), false, function(on)
-        def.onToggle(on)
-    end)
+    local function buildModule(parent, order, def)
+        local opened = false
+        local bodyH = def.body or 0
+        local cardFrame = new("Frame", {
+            Size = UDim2.new(1, 0, 0, MOD_HEAD),
+            BackgroundColor3 = T.White,
+            BackgroundTransparency = 0.93,
+            BorderSizePixel = 0,
+            ClipsDescendants = true,
+            LayoutOrder = order,
+        }, parent)
+        round(cardFrame, 10)
+        hairline(cardFrame, 0.92)
 
-    chip.Activated:Connect(function()
-        if listening == def.id then
-            listening = nil
-            chip.Text = keyLabel(modUi[def.id].bind)
-            chip.TextColor3 = T.Muted
-            return
-        end
-        if listening and modUi[listening] then
-            local prev = modUi[listening]
-            prev.chip.Text = keyLabel(prev.bind)
-            prev.chip.TextColor3 = T.Muted
-        end
-        listening = def.id
-        chip.Text = "..."
-        chip.TextColor3 = T.AccentHi
-    end)
-
-    if bodyH > 0 then
-        local body = new("Frame", {
-            Position = UDim2.fromOffset(0, MOD_HEAD),
-            Size = UDim2.new(1, 0, 0, bodyH),
+        local head = new("Frame", {
+            Size = UDim2.new(1, 0, 0, MOD_HEAD),
             BackgroundTransparency = 1,
         }, cardFrame)
-        def.build(body)
+
+        local textX = 12
+        local chev
+        if bodyH > 0 then
+            chev = makeIcon(head, "chevron", 12, T.Muted)
+            chev.Frame.Position = UDim2.fromOffset(10, 25)
+            chev.SetFacing("right", false)
+            textX = 28
+        end
+
+        local icon = makeIcon(head, def.icon, 16, T.Text)
+        icon.Frame.Position = UDim2.fromOffset(textX, 23)
+        local nameX = textX + 22
+        label(head, def.name, UDim2.fromOffset(nameX, 12), UDim2.new(1, -nameX - 118, 0, 18), {
+            font = F.Bold,
+            size = 13,
+            truncate = Enum.TextTruncate.AtEnd,
+        })
+        label(head, def.desc, UDim2.fromOffset(nameX, 32), UDim2.new(1, -nameX - 118, 0, 16), {
+            color = T.Muted,
+            size = 11,
+            truncate = Enum.TextTruncate.AtEnd,
+        })
+
+        if bodyH > 0 then
+            local hit = new("TextButton", {
+                Size = UDim2.new(1, -112, 1, 0),
+                BackgroundTransparency = 1,
+                Text = "",
+                AutoButtonColor = false,
+            }, head)
+            hit.MouseEnter:Connect(function()
+                tween(cardFrame, { BackgroundTransparency = 0.9 }, 0.12)
+            end)
+            hit.MouseLeave:Connect(function()
+                tween(cardFrame, { BackgroundTransparency = 0.93 }, 0.15)
+            end)
+            hit.Activated:Connect(function()
+                opened = not opened
+                tween(cardFrame, { Size = UDim2.new(1, 0, 0, opened and (MOD_HEAD + bodyH) or MOD_HEAD) }, 0.24)
+                chev.SetFacing(opened and "down" or "right", true)
+            end)
+        end
+
+        local chip = new("TextButton", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -54, 0.5, 0),
+            Size = UDim2.fromOffset(48, 22),
+            BackgroundColor3 = T.White,
+            BackgroundTransparency = 0.9,
+            Text = "None",
+            TextColor3 = T.Muted,
+            Font = F.Medium,
+            TextSize = 11,
+            AutoButtonColor = false,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            ZIndex = 4,
+            BorderSizePixel = 0,
+        }, head)
+        round(chip, 6)
+
+        local sw = switch(head, UDim2.new(1, -46, 0.5, -12), false, function(on)
+            def.onToggle(on)
+        end)
+
+        chip.Activated:Connect(function()
+            if listening == def.id then
+                listening = nil
+                chip.Text = keyLabel(modUi[def.id].bind)
+                chip.TextColor3 = T.Muted
+                return
+            end
+            if listening and modUi[listening] then
+                local prev = modUi[listening]
+                prev.chip.Text = keyLabel(prev.bind)
+                prev.chip.TextColor3 = T.Muted
+            end
+            listening = def.id
+            chip.Text = "..."
+            chip.TextColor3 = T.AccentHi
+        end)
+
+        if bodyH > 0 then
+            local body = new("Frame", {
+                Position = UDim2.fromOffset(0, MOD_HEAD),
+                Size = UDim2.new(1, 0, 0, bodyH),
+                BackgroundTransparency = 1,
+            }, cardFrame)
+            def.build(body)
+        end
+
+        modUi[def.id] = { bind = nil, chip = chip, switch = sw, onToggle = def.onToggle }
     end
 
-    modUi[def.id] = { bind = nil, chip = chip, switch = sw, onToggle = def.onToggle }
-end
+    local moduleSpecs = {
+        {
+            id = "speed",
+            name = "Speed",
+            desc = "Boost horizontal movement",
+            icon = "fast",
+            body = 78,
+            onToggle = function(on)
+                motion.speedOn = on
+            end,
+            build = function(body)
+                label(body, "Studs / s", UDim2.fromOffset(12, 10), UDim2.fromOffset(120, 20), { font = F.Medium, size = 12 })
+                local box = input(body, UDim2.new(1, -72, 0, 6), UDim2.fromOffset(60, 26), tostring(motion.speed), "300")
+                box.TextXAlignment = Enum.TextXAlignment.Center
+                local sl = slider(body, UDim2.fromOffset(12, 48), colW - 24, 16, 500, motion.speed, false, function(v)
+                    motion.speed = math.floor(v + 0.5)
+                    box.Text = tostring(motion.speed)
+                end)
+                box.FocusLost:Connect(function()
+                    local v = tonumber(box.Text)
+                    if v and v > 0 then
+                        motion.speed = math.clamp(math.floor(v + 0.5), 16, 500)
+                        sl.Set(motion.speed)
+                    end
+                    box.Text = tostring(motion.speed)
+                end)
+            end,
+        },
+        {
+            id = "fly",
+            name = "Fly",
+            desc = "Hover, or glide downward",
+            icon = "fly",
+            body = 156,
+            onToggle = function(on)
+                setFly(on)
+            end,
+            build = function(body)
+                label(body, "Mode", UDim2.fromOffset(12, 4), UDim2.fromOffset(80, 16), { color = T.Muted, size = 12 })
+                segmented(body, UDim2.fromOffset(12, 22), UDim2.fromOffset(colW - 24, 28), { "Default", "Glide" }, motion.flyMode, function(v)
+                    motion.flyMode = v
+                end)
+                label(body, "Speed", UDim2.fromOffset(12, 58), UDim2.fromOffset(80, 16), { font = F.Medium, size = 12 })
+                local speedRead = label(body, tostring(motion.flySpeed), UDim2.new(1, -72, 0, 58), UDim2.fromOffset(60, 16), {
+                    color = T.Muted,
+                    size = 12,
+                    align = Enum.TextXAlignment.Right,
+                })
+                slider(body, UDim2.fromOffset(12, 80), colW - 24, 16, 300, motion.flySpeed, false, function(v)
+                    motion.flySpeed = math.floor(v + 0.5)
+                    speedRead.Text = tostring(motion.flySpeed)
+                end)
+                label(body, "Sink", UDim2.fromOffset(12, 100), UDim2.fromOffset(80, 16), { font = F.Medium, size = 12 })
+                local sinkRead = label(body, tostring(motion.glideSink), UDim2.new(1, -72, 0, 100), UDim2.fromOffset(60, 16), {
+                    color = T.Muted,
+                    size = 12,
+                    align = Enum.TextXAlignment.Right,
+                })
+                slider(body, UDim2.fromOffset(12, 122), colW - 24, 2, 60, motion.glideSink, false, function(v)
+                    motion.glideSink = math.floor(v + 0.5)
+                    sinkRead.Text = tostring(motion.glideSink)
+                end)
+            end,
+        },
+        {
+            id = "teleport",
+            name = "Teleport",
+            desc = "Click a world object once",
+            icon = "target",
+            body = 128,
+            onToggle = function(on)
+                setTeleport(on)
+            end,
+            build = function(body)
+                label(body, "Origin", UDim2.fromOffset(12, 6), UDim2.fromOffset(120, 16), { color = T.Muted, size = 12 })
+                dropdown(body, UDim2.fromOffset(12, 24), UDim2.fromOffset(colW - 24, 28), { "Start", "Center", "End" }, motion.tpOrigin, function(v)
+                    motion.tpOrigin = v
+                end)
+                label(body, "Offset", UDim2.fromOffset(12, 60), UDim2.fromOffset(80, 16), { color = T.Muted, size = 12 })
+                local box = input(body, UDim2.new(1, -84, 0, 56), UDim2.fromOffset(72, 26), fmt(motion.tpOffset), "3")
+                box.TextXAlignment = Enum.TextXAlignment.Center
+                box.FocusLost:Connect(function()
+                    local v = tonumber(box.Text)
+                    if v then
+                        motion.tpOffset = v
+                    end
+                    box.Text = fmt(motion.tpOffset)
+                end)
+                label(body, "Arms a world click, then turns off.", UDim2.fromOffset(12, 92), UDim2.new(1, -24, 0, 28), {
+                    color = T.Muted,
+                    size = 11,
+                    wrap = true,
+                })
+            end,
+        },
+        {
+            id = "click",
+            name = "Click",
+            desc = "Repeat a click off this window",
+            icon = "click",
+            body = 96,
+            onToggle = function(on)
+                motion.clickOn = on
+            end,
+            build = function(body)
+                label(body, "Interval", UDim2.fromOffset(12, 8), UDim2.fromOffset(80, 16), { font = F.Medium, size = 12 })
+                local read = label(body, fmt(motion.clickInterval) .. "s", UDim2.new(1, -72, 0, 8), UDim2.fromOffset(60, 16), {
+                    color = T.Muted,
+                    size = 12,
+                    align = Enum.TextXAlignment.Right,
+                })
+                slider(body, UDim2.fromOffset(12, 36), colW - 24, 0.05, 1, motion.clickInterval, true, function(v)
+                    motion.clickInterval = math.floor(v * 100 + 0.5) / 100
+                    read.Text = fmt(motion.clickInterval) .. "s"
+                end)
+                label(body, "Clicks the bottom-left corner, outside this window.", UDim2.fromOffset(12, 58), UDim2.new(1, -24, 0, 32), {
+                    color = T.Muted,
+                    size = 11,
+                    wrap = true,
+                })
+            end,
+        },
+        {
+            id = "noclip",
+            name = "Noclip",
+            desc = "Walk through parts",
+            icon = "noclip",
+            body = 0,
+            onToggle = function(on)
+                setNoclip(on)
+            end,
+        },
+    }
 
-local moduleSpecs = {
-    {
-        id = "speed",
-        name = "Speed",
-        desc = "Boost horizontal movement",
-        icon = "fast",
-        body = 78,
-        onToggle = function(on)
-            motion.speedOn = on
-        end,
-        build = function(body)
-            label(body, "Studs / s", UDim2.fromOffset(12, 10), UDim2.fromOffset(120, 20), { font = F.Medium, size = 12 })
-            local box = input(body, UDim2.new(1, -72, 0, 6), UDim2.fromOffset(60, 26), tostring(motion.speed), "300")
-            box.TextXAlignment = Enum.TextXAlignment.Center
-            local sl = slider(body, UDim2.fromOffset(12, 48), colW - 24, 16, 500, motion.speed, false, function(v)
-                motion.speed = math.floor(v + 0.5)
-                box.Text = tostring(motion.speed)
-            end)
-            box.FocusLost:Connect(function()
-                local v = tonumber(box.Text)
-                if v and v > 0 then
-                    motion.speed = math.clamp(math.floor(v + 0.5), 16, 500)
-                    sl.Set(motion.speed)
-                end
-                box.Text = tostring(motion.speed)
-            end)
-        end,
-    },
-    {
-        id = "fly",
-        name = "Fly",
-        desc = "Hover, or glide downward",
-        icon = "fly",
-        body = 156,
-        onToggle = function(on)
-            setFly(on)
-        end,
-        build = function(body)
-            label(body, "Mode", UDim2.fromOffset(12, 4), UDim2.fromOffset(80, 16), { color = T.Muted, size = 12 })
-            segmented(body, UDim2.fromOffset(12, 22), UDim2.fromOffset(colW - 24, 28), { "Default", "Glide" }, motion.flyMode, function(v)
-                motion.flyMode = v
-            end)
-            label(body, "Speed", UDim2.fromOffset(12, 58), UDim2.fromOffset(80, 16), { font = F.Medium, size = 12 })
-            local speedRead = label(body, tostring(motion.flySpeed), UDim2.new(1, -72, 0, 58), UDim2.fromOffset(60, 16), {
-                color = T.Muted,
-                size = 12,
-                align = Enum.TextXAlignment.Right,
-            })
-            slider(body, UDim2.fromOffset(12, 80), colW - 24, 16, 300, motion.flySpeed, false, function(v)
-                motion.flySpeed = math.floor(v + 0.5)
-                speedRead.Text = tostring(motion.flySpeed)
-            end)
-            label(body, "Sink", UDim2.fromOffset(12, 100), UDim2.fromOffset(80, 16), { font = F.Medium, size = 12 })
-            local sinkRead = label(body, tostring(motion.glideSink), UDim2.new(1, -72, 0, 100), UDim2.fromOffset(60, 16), {
-                color = T.Muted,
-                size = 12,
-                align = Enum.TextXAlignment.Right,
-            })
-            slider(body, UDim2.fromOffset(12, 122), colW - 24, 2, 60, motion.glideSink, false, function(v)
-                motion.glideSink = math.floor(v + 0.5)
-                sinkRead.Text = tostring(motion.glideSink)
-            end)
-        end,
-    },
-    {
-        id = "teleport",
-        name = "Teleport",
-        desc = "Click a world object once",
-        icon = "target",
-        body = 128,
-        onToggle = function(on)
-            setTeleport(on)
-        end,
-        build = function(body)
-            label(body, "Origin", UDim2.fromOffset(12, 6), UDim2.fromOffset(120, 16), { color = T.Muted, size = 12 })
-            dropdown(body, UDim2.fromOffset(12, 24), UDim2.fromOffset(colW - 24, 28), { "Start", "Center", "End" }, motion.tpOrigin, function(v)
-                motion.tpOrigin = v
-            end)
-            label(body, "Offset", UDim2.fromOffset(12, 60), UDim2.fromOffset(80, 16), { color = T.Muted, size = 12 })
-            local box = input(body, UDim2.new(1, -84, 0, 56), UDim2.fromOffset(72, 26), fmt(motion.tpOffset), "3")
-            box.TextXAlignment = Enum.TextXAlignment.Center
-            box.FocusLost:Connect(function()
-                local v = tonumber(box.Text)
-                if v then
-                    motion.tpOffset = v
-                end
-                box.Text = fmt(motion.tpOffset)
-            end)
-            label(body, "Arms a world click, then turns off.", UDim2.fromOffset(12, 92), UDim2.new(1, -24, 0, 28), {
-                color = T.Muted,
-                size = 11,
-                wrap = true,
-            })
-        end,
-    },
-    {
-        id = "click",
-        name = "Click",
-        desc = "Repeat a click off this window",
-        icon = "click",
-        body = 96,
-        onToggle = function(on)
-            motion.clickOn = on
-        end,
-        build = function(body)
-            label(body, "Interval", UDim2.fromOffset(12, 8), UDim2.fromOffset(80, 16), { font = F.Medium, size = 12 })
-            local read = label(body, fmt(motion.clickInterval) .. "s", UDim2.new(1, -72, 0, 8), UDim2.fromOffset(60, 16), {
-                color = T.Muted,
-                size = 12,
-                align = Enum.TextXAlignment.Right,
-            })
-            slider(body, UDim2.fromOffset(12, 36), colW - 24, 0.05, 1, motion.clickInterval, true, function(v)
-                motion.clickInterval = math.floor(v * 100 + 0.5) / 100
-                read.Text = fmt(motion.clickInterval) .. "s"
-            end)
-            label(body, "Clicks the bottom-left corner, outside this window.", UDim2.fromOffset(12, 58), UDim2.new(1, -24, 0, 32), {
-                color = T.Muted,
-                size = 11,
-                wrap = true,
-            })
-        end,
-    },
-    {
-        id = "noclip",
-        name = "Noclip",
-        desc = "Walk through parts",
-        icon = "noclip",
-        body = 0,
-        onToggle = function(on)
-            setNoclip(on)
-        end,
-    },
-}
-
-for i, def in ipairs(moduleSpecs) do
-    local col = (i % 2 == 1) and leftCol or rightCol
-    buildModule(col, math.ceil(i / 2), def)
+    for i, def in ipairs(moduleSpecs) do
+        local col = (i % 2 == 1) and leftCol or rightCol
+        buildModule(col, math.ceil(i / 2), def)
+    end
 end
 
 --==============================================================================
 -- 8. OBJECTS, TOUR, PRESETS, SETTINGS
 --==============================================================================
 
-local AddBtn = button(ObjectsPage, "Add", UDim2.fromOffset(0, 0), UDim2.fromOffset(104, 34), "primary", "plus")
-segmented(ObjectsPage, UDim2.fromOffset(112, 0), UDim2.fromOffset(128, 34), { "Part", "Model" }, pickType, function(v)
-    pickType = v
-end)
-label(ObjectsPage, "X-ray", UDim2.fromOffset(258, 0), UDim2.fromOffset(40, 34), { color = T.Muted, size = 12 })
-switch(ObjectsPage, UDim2.fromOffset(298, 5), xray, function(v)
-    xray = v
-end)
-label(ObjectsPage, "Show saved", UDim2.new(1, -140, 0, 0), UDim2.fromOffset(90, 34), {
-    color = T.Muted,
-    size = 12,
-    align = Enum.TextXAlignment.Right,
-})
-switch(ObjectsPage, UDim2.new(1, -42, 0, 5), false, function(v)
-    espOn = v
-    refreshESP()
-end)
-
-local HintLabel = label(ObjectsPage, "Press Add, then click an object in the world.",
-    UDim2.fromOffset(2, 40), UDim2.fromOffset(400, 16), { color = T.Muted, size = 12 })
-local CountLabel = label(ObjectsPage, "0 objects", UDim2.new(1, -140, 0, 40), UDim2.fromOffset(140, 16), {
-    color = T.Muted,
-    size = 12,
-    align = Enum.TextXAlignment.Right,
-})
-
-local ListCard = card(ObjectsPage, UDim2.fromOffset(0, 62), UDim2.fromOffset(PAGE_W, PAGE_H - 62))
-local ListNameBox = input(ListCard, UDim2.fromOffset(12, 12), UDim2.fromOffset(236, 32), "", "List name")
-ListNameBox.Font = F.Bold
-local ListArrow = button(ListCard, "", UDim2.fromOffset(254, 12), UDim2.fromOffset(32, 32), "secondary", "chevron")
-local NewListBtn = button(ListCard, "New list", UDim2.fromOffset(294, 12), UDim2.fromOffset(120, 32), "secondary", "plus")
-local DelListBtn = button(ListCard, "Delete", UDim2.fromOffset(422, 12), UDim2.fromOffset(110, 32), "danger", "close")
-
-local ListScroll = new("ScrollingFrame", {
-    Position = UDim2.fromOffset(12, 56),
-    Size = UDim2.new(1, -24, 1, -68),
-    BackgroundColor3 = T.Dark,
-    BackgroundTransparency = 0.6,
-    BorderSizePixel = 0,
-    ScrollBarThickness = 3,
-    ScrollBarImageColor3 = T.Accent,
-    CanvasSize = UDim2.new(),
-    AutomaticCanvasSize = Enum.AutomaticSize.Y,
-}, ListCard)
-round(ListScroll, 10)
-hairline(ListScroll, 0.94)
-new("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder }, ListScroll)
-new("UIPadding", {
-    PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
-    PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 9),
-}, ListScroll)
-
-local EmptyLabel = label(ListScroll, "This list is empty.\nPress Add and click an object in the world.",
-    UDim2.new(), UDim2.new(1, 0, 0, 70),
-    { color = T.Muted, size = 13, wrap = true, align = Enum.TextXAlignment.Center })
-
-local DefaultsCard = card(TourPage, UDim2.fromOffset(0, 0), UDim2.fromOffset(PAGE_W, 176),
-    "New object defaults", "Applied to objects you add. Every object can override them.")
-local col3 = (PAGE_W - 24 - 16) / 3
-
-label(DefaultsCard, "Action", UDim2.fromOffset(12, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-dropdown(DefaultsCard, UDim2.fromOffset(12, 66), UDim2.fromOffset(col3, 32), ACTIONS, D.action, function(v)
-    D.action = v
-end)
-label(DefaultsCard, "Speed (studs/s)", UDim2.fromOffset(12 + col3 + 8, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-local DefSpeedBox = input(DefaultsCard, UDim2.fromOffset(12 + col3 + 8, 66), UDim2.fromOffset(100, 32), fmt(D.speed), "40")
-label(DefaultsCard, "Offset (studs)", UDim2.fromOffset(12 + col3 + 116, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-local DefOffsetBox = input(DefaultsCard, UDim2.fromOffset(12 + col3 + 116, 66), UDim2.fromOffset(100, 32), fmt(D.offset), "3")
-local ApplyAllBtn = button(DefaultsCard, "Apply to all", UDim2.fromOffset(PAGE_W - 144, 66), UDim2.fromOffset(132, 32), "secondary")
-
-for i, axis in ipairs({ "x", "y", "z" }) do
-    local x = 12 + (i - 1) * (col3 + 8)
-    label(DefaultsCard, axis:upper() .. " axis" .. (axis == "y" and " (height)" or ""),
-        UDim2.fromOffset(x, 108), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-    dropdown(DefaultsCard, UDim2.fromOffset(x, 124), UDim2.fromOffset(col3, 32),
-        { "Start", "Center", "End" }, D.tp[axis], function(v)
-            D.tp[axis] = v
-        end)
-end
-
-local TourCard = card(TourPage, UDim2.fromOffset(0, 186), UDim2.fromOffset(PAGE_W, PAGE_H - 186),
-    "Auto tour", "Runs each object's own action in order")
-label(TourCard, "Order", UDim2.fromOffset(12, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-dropdown(TourCard, UDim2.fromOffset(12, 66), UDim2.fromOffset(220, 32),
-    { "Forward", "Reverse", "Ping-pong", "Random" }, tour.order, function(v)
-        tour.order = v
-    end)
-label(TourCard, "Loop forever", UDim2.fromOffset(252, 66), UDim2.fromOffset(120, 32), { font = F.Medium })
-switch(TourCard, UDim2.fromOffset(PAGE_W - 54, 70), tour.loop, function(v)
-    tour.loop = v
-end)
-label(TourCard, "Default pause between steps", UDim2.fromOffset(12, 110), UDim2.fromOffset(280, 20), { font = F.Medium })
-label(TourCard, "sec", UDim2.new(1, -52, 0, 108), UDim2.fromOffset(40, 24), {
-    color = T.Muted,
-    size = 12,
-    align = Enum.TextXAlignment.Right,
-})
-local IntervalBox = input(TourCard, UDim2.new(1, -128, 0, 108), UDim2.fromOffset(72, 24), fmt(tour.interval), "0.5")
-IntervalBox.TextXAlignment = Enum.TextXAlignment.Center
-local IntervalSlider = slider(TourCard, UDim2.fromOffset(14, 148), PAGE_W - 28, 0.05, 5, tour.interval, true, function(v)
-    tour.interval = math.floor(v * 100 + 0.5) / 100
-    IntervalBox.Text = fmt(tour.interval)
-end)
-local TourProgress = label(TourCard, "Idle", UDim2.fromOffset(14, 168), UDim2.fromOffset(PAGE_W - 28, 16), {
-    color = T.Muted,
-    size = 12,
-    truncate = Enum.TextTruncate.AtEnd,
-})
-local StartBtn = button(TourCard, "Start tour", UDim2.fromOffset(12, PAGE_H - 186 - 48), UDim2.fromOffset(PAGE_W - 24, 36), "primary")
-BtnApi[StartBtn].label.Font = F.Bold
-
 local exportScope = "Current list"
-local ExportCard = card(PresetsPage, UDim2.fromOffset(0, 0), UDim2.fromOffset(PAGE_W, 136),
-    "Export", "Copy your lists as JSON or save them to a file")
-segmented(ExportCard, UDim2.fromOffset(12, 52), UDim2.fromOffset(240, 30), { "Current list", "All lists" }, exportScope, function(v)
-    exportScope = v
-end)
-local halfW = (PAGE_W - 24 - 8) / 2
-local CopyBtn = button(ExportCard, "Copy to clipboard", UDim2.fromOffset(12, 92), UDim2.fromOffset(halfW, 34), "primary")
-local SaveBtn = button(ExportCard, "Save to file", UDim2.fromOffset(20 + halfW, 92), UDim2.fromOffset(halfW, 34), "secondary")
 
-local ImportCard = card(PresetsPage, UDim2.fromOffset(0, 146), UDim2.fromOffset(PAGE_W, 170),
-    "Import", "Imported lists are added next to your existing ones")
-local PasteBtn = button(ImportCard, "Paste from clipboard", UDim2.fromOffset(12, 52), UDim2.fromOffset(halfW, 34), "primary")
-local LoadBtn = button(ImportCard, "Load from file", UDim2.fromOffset(20 + halfW, 52), UDim2.fromOffset(halfW, 34), "secondary")
-label(ImportCard, "Or paste JSON manually", UDim2.fromOffset(12, 98), UDim2.fromOffset(300, 14), { color = T.Muted, size = 12 })
-local JsonBox = input(ImportCard, UDim2.fromOffset(12, 118), UDim2.fromOffset(PAGE_W - 24 - 96, 34), "", "Paste preset JSON here")
-JsonBox.TextTruncate = Enum.TextTruncate.AtEnd
-local ImportTextBtn = button(ImportCard, "Import", UDim2.fromOffset(PAGE_W - 100, 118), UDim2.fromOffset(88, 34), "secondary")
+do
+    ui.AddBtn = button(pages.Objects, "Add", UDim2.fromOffset(0, 0), UDim2.fromOffset(104, 34), "primary", "plus")
+    segmented(pages.Objects, UDim2.fromOffset(112, 0), UDim2.fromOffset(128, 34), { "Part", "Model" }, pickType, function(v)
+        pickType = v
+    end)
+    label(pages.Objects, "X-ray", UDim2.fromOffset(258, 0), UDim2.fromOffset(40, 34), { color = T.Muted, size = 12 })
+    switch(pages.Objects, UDim2.fromOffset(298, 5), xray, function(v)
+        xray = v
+    end)
+    label(pages.Objects, "Show saved", UDim2.new(1, -140, 0, 0), UDim2.fromOffset(90, 34), {
+        color = T.Muted,
+        size = 12,
+        align = Enum.TextXAlignment.Right,
+    })
+    switch(pages.Objects, UDim2.new(1, -42, 0, 5), false, function(v)
+        espOn = v
+        refreshESP()
+    end)
 
-local CapsLabel = label(PresetsPage, "", UDim2.fromOffset(2, 326), UDim2.fromOffset(PAGE_W, 16), { color = T.Muted, size = 12 })
-label(PresetsPage, "Objects are saved by their path in the game plus a fallback position, so a preset works in the same game across sessions.",
-    UDim2.fromOffset(2, 346), UDim2.fromOffset(PAGE_W, 32), { color = T.Muted, size = 12, wrap = true })
+    ui.HintLabel = label(pages.Objects, "Press Add, then click an object in the world.",
+        UDim2.fromOffset(2, 40), UDim2.fromOffset(400, 16), { color = T.Muted, size = 12 })
+    ui.CountLabel = label(pages.Objects, "0 objects", UDim2.new(1, -140, 0, 40), UDim2.fromOffset(140, 16), {
+        color = T.Muted,
+        size = 12,
+        align = Enum.TextXAlignment.Right,
+    })
 
-local AppearanceCard = card(SettingsPage, UDim2.fromOffset(0, 0), UDim2.fromOffset(PAGE_W, 216),
-    "Appearance", "Frosted glass window")
-label(AppearanceCard, "Background blur", UDim2.fromOffset(14, 54), UDim2.fromOffset(250, 24), { font = F.Medium })
-switch(AppearanceCard, UDim2.new(1, -56, 0, 54), settings.blur, function(v)
-    settings.blur = v
-end)
-label(AppearanceCard, "Blur strength", UDim2.fromOffset(14, 96), UDim2.fromOffset(200, 20), { font = F.Medium })
-local BlurValue = label(AppearanceCard, "100%", UDim2.new(1, -74, 0, 96), UDim2.fromOffset(60, 20), {
-    color = T.Muted,
-    size = 12,
-    align = Enum.TextXAlignment.Right,
-})
-slider(AppearanceCard, UDim2.fromOffset(14, 128), PAGE_W - 28, 0.1, 1, settings.blurStrength, false, function(v)
-    settings.blurStrength = v
-    BlurValue.Text = string.format("%d%%", math.floor(v * 100 + 0.5))
-end)
-label(AppearanceCard, "Window opacity", UDim2.fromOffset(14, 148), UDim2.fromOffset(200, 20), { font = F.Medium })
-local OpacityValue = label(AppearanceCard, "86%", UDim2.new(1, -74, 0, 148), UDim2.fromOffset(60, 20), {
-    color = T.Muted,
-    size = 12,
-    align = Enum.TextXAlignment.Right,
-})
-slider(AppearanceCard, UDim2.fromOffset(14, 180), PAGE_W - 28, 0.5, 1, settings.opacity, false, function(v)
-    settings.opacity = v
-    OpacityValue.Text = string.format("%d%%", math.floor(v * 100 + 0.5))
-    MainFrame.BackgroundTransparency = 1 - v
-end)
-label(SettingsPage, "Blur is a depth-of-field pass plus a glass pane fitted to this window. The panel draws above other interfaces. Turn blur off if it looks wrong. The frosted window stays.",
-    UDim2.fromOffset(2, 226), UDim2.fromOffset(PAGE_W, 48), { color = T.Muted, size = 12, wrap = true })
+    local ListCard = card(pages.Objects, UDim2.fromOffset(0, 62), UDim2.fromOffset(PAGE_W, PAGE_H - 62))
+    ui.ListNameBox = input(ListCard, UDim2.fromOffset(12, 12), UDim2.fromOffset(236, 32), "", "List name")
+    ui.ListNameBox.Font = F.Bold
+    ui.ListArrow = button(ListCard, "", UDim2.fromOffset(254, 12), UDim2.fromOffset(32, 32), "secondary", "chevron")
+    ui.NewListBtn = button(ListCard, "New list", UDim2.fromOffset(294, 12), UDim2.fromOffset(120, 32), "secondary", "plus")
+    ui.DelListBtn = button(ListCard, "Delete", UDim2.fromOffset(422, 12), UDim2.fromOffset(110, 32), "danger", "close")
+
+    ui.ListScroll = new("ScrollingFrame", {
+        Position = UDim2.fromOffset(12, 56),
+        Size = UDim2.new(1, -24, 1, -68),
+        BackgroundColor3 = T.Dark,
+        BackgroundTransparency = 0.6,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = T.Accent,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    }, ListCard)
+    round(ui.ListScroll, 10)
+    hairline(ui.ListScroll, 0.94)
+    new("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder }, ui.ListScroll)
+    new("UIPadding", {
+        PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+        PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 9),
+    }, ui.ListScroll)
+
+    ui.EmptyLabel = label(ui.ListScroll, "This list is empty.\nPress Add and click an object in the world.",
+        UDim2.new(), UDim2.new(1, 0, 0, 70),
+        { color = T.Muted, size = 13, wrap = true, align = Enum.TextXAlignment.Center })
+
+    local DefaultsCard = card(pages.Tour, UDim2.fromOffset(0, 0), UDim2.fromOffset(PAGE_W, 176),
+        "New object defaults", "Applied to objects you add. Every object can override them.")
+    local col3 = (PAGE_W - 24 - 16) / 3
+
+    label(DefaultsCard, "Action", UDim2.fromOffset(12, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
+    dropdown(DefaultsCard, UDim2.fromOffset(12, 66), UDim2.fromOffset(col3, 32), ACTIONS, D.action, function(v)
+        D.action = v
+    end)
+    label(DefaultsCard, "Speed (studs/s)", UDim2.fromOffset(12 + col3 + 8, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
+    ui.DefSpeedBox = input(DefaultsCard, UDim2.fromOffset(12 + col3 + 8, 66), UDim2.fromOffset(100, 32), fmt(D.speed), "40")
+    label(DefaultsCard, "Offset (studs)", UDim2.fromOffset(12 + col3 + 116, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
+    ui.DefOffsetBox = input(DefaultsCard, UDim2.fromOffset(12 + col3 + 116, 66), UDim2.fromOffset(100, 32), fmt(D.offset), "3")
+    ui.ApplyAllBtn = button(DefaultsCard, "Apply to all", UDim2.fromOffset(PAGE_W - 144, 66), UDim2.fromOffset(132, 32), "secondary")
+
+    for i, axis in ipairs({ "x", "y", "z" }) do
+        local x = 12 + (i - 1) * (col3 + 8)
+        label(DefaultsCard, axis:upper() .. " axis" .. (axis == "y" and " (height)" or ""),
+            UDim2.fromOffset(x, 108), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
+        dropdown(DefaultsCard, UDim2.fromOffset(x, 124), UDim2.fromOffset(col3, 32),
+            { "Start", "Center", "End" }, D.tp[axis], function(v)
+                D.tp[axis] = v
+            end)
+    end
+
+    local TourCard = card(pages.Tour, UDim2.fromOffset(0, 186), UDim2.fromOffset(PAGE_W, PAGE_H - 186),
+        "Auto tour", "Runs each object's own action in order")
+    label(TourCard, "Order", UDim2.fromOffset(12, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
+    dropdown(TourCard, UDim2.fromOffset(12, 66), UDim2.fromOffset(220, 32),
+        { "Forward", "Reverse", "Ping-pong", "Random" }, tour.order, function(v)
+            tour.order = v
+        end)
+    label(TourCard, "Loop forever", UDim2.fromOffset(252, 66), UDim2.fromOffset(120, 32), { font = F.Medium })
+    switch(TourCard, UDim2.fromOffset(PAGE_W - 54, 70), tour.loop, function(v)
+        tour.loop = v
+    end)
+    label(TourCard, "Default pause between steps", UDim2.fromOffset(12, 110), UDim2.fromOffset(280, 20), { font = F.Medium })
+    label(TourCard, "sec", UDim2.new(1, -52, 0, 108), UDim2.fromOffset(40, 24), {
+        color = T.Muted,
+        size = 12,
+        align = Enum.TextXAlignment.Right,
+    })
+    ui.IntervalBox = input(TourCard, UDim2.new(1, -128, 0, 108), UDim2.fromOffset(72, 24), fmt(tour.interval), "0.5")
+    ui.IntervalBox.TextXAlignment = Enum.TextXAlignment.Center
+    ui.IntervalSlider = slider(TourCard, UDim2.fromOffset(14, 148), PAGE_W - 28, 0.05, 5, tour.interval, true, function(v)
+        tour.interval = math.floor(v * 100 + 0.5) / 100
+        ui.IntervalBox.Text = fmt(tour.interval)
+    end)
+    ui.TourProgress = label(TourCard, "Idle", UDim2.fromOffset(14, 168), UDim2.fromOffset(PAGE_W - 28, 16), {
+        color = T.Muted,
+        size = 12,
+        truncate = Enum.TextTruncate.AtEnd,
+    })
+    ui.StartBtn = button(TourCard, "Start tour", UDim2.fromOffset(12, PAGE_H - 186 - 48), UDim2.fromOffset(PAGE_W - 24, 36), "primary")
+    BtnApi[ui.StartBtn].label.Font = F.Bold
+
+    local ExportCard = card(pages.Presets, UDim2.fromOffset(0, 0), UDim2.fromOffset(PAGE_W, 136),
+        "Export", "Copy your lists as JSON or save them to a file")
+    segmented(ExportCard, UDim2.fromOffset(12, 52), UDim2.fromOffset(240, 30), { "Current list", "All lists" }, exportScope, function(v)
+        exportScope = v
+    end)
+    local halfW = (PAGE_W - 24 - 8) / 2
+    ui.CopyBtn = button(ExportCard, "Copy to clipboard", UDim2.fromOffset(12, 92), UDim2.fromOffset(halfW, 34), "primary")
+    ui.SaveBtn = button(ExportCard, "Save to file", UDim2.fromOffset(20 + halfW, 92), UDim2.fromOffset(halfW, 34), "secondary")
+
+    local ImportCard = card(pages.Presets, UDim2.fromOffset(0, 146), UDim2.fromOffset(PAGE_W, 170),
+        "Import", "Imported lists are added next to your existing ones")
+    ui.PasteBtn = button(ImportCard, "Paste from clipboard", UDim2.fromOffset(12, 52), UDim2.fromOffset(halfW, 34), "primary")
+    ui.LoadBtn = button(ImportCard, "Load from file", UDim2.fromOffset(20 + halfW, 52), UDim2.fromOffset(halfW, 34), "secondary")
+    label(ImportCard, "Or paste JSON manually", UDim2.fromOffset(12, 98), UDim2.fromOffset(300, 14), { color = T.Muted, size = 12 })
+    ui.JsonBox = input(ImportCard, UDim2.fromOffset(12, 118), UDim2.fromOffset(PAGE_W - 24 - 96, 34), "", "Paste preset JSON here")
+    ui.JsonBox.TextTruncate = Enum.TextTruncate.AtEnd
+    ui.ImportTextBtn = button(ImportCard, "Import", UDim2.fromOffset(PAGE_W - 100, 118), UDim2.fromOffset(88, 34), "secondary")
+
+    ui.CapsLabel = label(pages.Presets, "", UDim2.fromOffset(2, 326), UDim2.fromOffset(PAGE_W, 16), { color = T.Muted, size = 12 })
+    label(pages.Presets, "Objects are saved by their path in the game plus a fallback position, so a preset works in the same game across sessions.",
+        UDim2.fromOffset(2, 346), UDim2.fromOffset(PAGE_W, 32), { color = T.Muted, size = 12, wrap = true })
+
+    local AppearanceCard = card(pages.Settings, UDim2.fromOffset(0, 0), UDim2.fromOffset(PAGE_W, 216),
+        "Appearance", "Frosted glass window")
+    label(AppearanceCard, "Background blur", UDim2.fromOffset(14, 54), UDim2.fromOffset(250, 24), { font = F.Medium })
+    switch(AppearanceCard, UDim2.new(1, -56, 0, 54), settings.blur, function(v)
+        settings.blur = v
+    end)
+    label(AppearanceCard, "Blur strength", UDim2.fromOffset(14, 96), UDim2.fromOffset(200, 20), { font = F.Medium })
+    local BlurValue = label(AppearanceCard, "100%", UDim2.new(1, -74, 0, 96), UDim2.fromOffset(60, 20), {
+        color = T.Muted,
+        size = 12,
+        align = Enum.TextXAlignment.Right,
+    })
+    slider(AppearanceCard, UDim2.fromOffset(14, 128), PAGE_W - 28, 0.1, 1, settings.blurStrength, false, function(v)
+        settings.blurStrength = v
+        BlurValue.Text = string.format("%d%%", math.floor(v * 100 + 0.5))
+    end)
+    label(AppearanceCard, "Window opacity", UDim2.fromOffset(14, 148), UDim2.fromOffset(200, 20), { font = F.Medium })
+    local OpacityValue = label(AppearanceCard, "86%", UDim2.new(1, -74, 0, 148), UDim2.fromOffset(60, 20), {
+        color = T.Muted,
+        size = 12,
+        align = Enum.TextXAlignment.Right,
+    })
+    slider(AppearanceCard, UDim2.fromOffset(14, 180), PAGE_W - 28, 0.5, 1, settings.opacity, false, function(v)
+        settings.opacity = v
+        OpacityValue.Text = string.format("%d%%", math.floor(v * 100 + 0.5))
+        MainFrame.BackgroundTransparency = 1 - v
+    end)
+    label(pages.Settings, "Blur is a depth-of-field pass plus a glass pane fitted to this window. The panel draws above other interfaces. Turn blur off if it looks wrong. The frosted window stays.",
+        UDim2.fromOffset(2, 226), UDim2.fromOffset(PAGE_W, 48), { color = T.Muted, size = 12, wrap = true })
+end
 
 --==============================================================================
 -- 9. WORLD HELPERS & PICKER
@@ -2179,19 +2200,19 @@ function setPickMode(on)
             end
         end
         pickKind = "add"
-        btnText(AddBtn, "Cancel")
-        btnIcon(AddBtn, "close")
-        setButtonStyle(AddBtn, "danger")
-        HintLabel.Text = xray and "Click an object. X-ray skips invisible and zero-size parts."
+        btnText(ui.AddBtn, "Cancel")
+        btnIcon(ui.AddBtn, "close")
+        setButtonStyle(ui.AddBtn, "danger")
+        ui.HintLabel.Text = xray and "Click an object. X-ray skips invisible and zero-size parts."
             or "Click an object in the world."
     else
         if pickKind == "add" then
             pickKind = nil
         end
-        btnText(AddBtn, "Add")
-        btnIcon(AddBtn, "plus")
-        setButtonStyle(AddBtn, "primary")
-        HintLabel.Text = "Press Add, then click an object in the world."
+        btnText(ui.AddBtn, "Add")
+        btnIcon(ui.AddBtn, "plus")
+        setButtonStyle(ui.AddBtn, "primary")
+        ui.HintLabel.Text = "Press Add, then click an object in the world."
         if not pickKind and hoverHighlight then
             hoverHighlight.Adornee = nil
         end
@@ -2291,7 +2312,7 @@ local function buildRow(list, item, index, isNew)
         BorderSizePixel = 0,
         ClipsDescendants = true,
         LayoutOrder = index,
-    }, ListScroll)
+    }, ui.ListScroll)
     round(row, 10)
     if isNew then
         tween(row, { Size = UDim2.new(1, 0, 0, targetH), BackgroundTransparency = 0.93 }, 0.3)
@@ -2525,18 +2546,18 @@ end
 function refreshList()
     closeDropdown(true)
     local list = currentList()
-    if ListNameBox.Text ~= list.name then
-        ListNameBox.Text = list.name
+    if ui.ListNameBox.Text ~= list.name then
+        ui.ListNameBox.Text = list.name
     end
-    CountLabel.Text = string.format("%d object%s", #list.items, #list.items == 1 and "" or "s")
+    ui.CountLabel.Text = string.format("%d object%s", #list.items, #list.items == 1 and "" or "s")
 
-    for _, child in ipairs(ListScroll:GetChildren()) do
+    for _, child in ipairs(ui.ListScroll:GetChildren()) do
         if child:IsA("Frame") then
             child:Destroy()
         end
     end
 
-    EmptyLabel.Visible = (#list.items == 0)
+    ui.EmptyLabel.Visible = (#list.items == 0)
     if previewHighlight then
         previewHighlight.Adornee = nil
     end
@@ -2705,18 +2726,18 @@ end
 
 function updateTourUI()
     if touring then
-        btnText(StartBtn, "Stop tour")
-        setButtonStyle(StartBtn, "danger")
-        FooterText.Text = "Tour running"
-        tween(FooterText, { TextColor3 = T.Success }, 0.2)
-        tween(FooterDot, { BackgroundColor3 = T.Success }, 0.2)
+        btnText(ui.StartBtn, "Stop tour")
+        setButtonStyle(ui.StartBtn, "danger")
+        ui.FooterText.Text = "Tour running"
+        tween(ui.FooterText, { TextColor3 = T.Success }, 0.2)
+        tween(ui.FooterDot, { BackgroundColor3 = T.Success }, 0.2)
     else
-        btnText(StartBtn, "Start tour")
-        setButtonStyle(StartBtn, "primary")
-        FooterText.Text = "Tour idle"
-        tween(FooterText, { TextColor3 = T.Muted }, 0.2)
-        tween(FooterDot, { BackgroundColor3 = T.Muted }, 0.2)
-        TourProgress.Text = "Idle"
+        btnText(ui.StartBtn, "Start tour")
+        setButtonStyle(ui.StartBtn, "primary")
+        ui.FooterText.Text = "Tour idle"
+        tween(ui.FooterText, { TextColor3 = T.Muted }, 0.2)
+        tween(ui.FooterDot, { BackgroundColor3 = T.Muted }, 0.2)
+        ui.TourProgress.Text = "Idle"
     end
 end
 
@@ -2801,7 +2822,7 @@ function startTour()
             end
 
             local item = list.items[index]
-            TourProgress.Text = string.format("%d/%d  %s  -  %s", index, n, item.name, item.action)
+            ui.TourProgress.Text = string.format("%d/%d  %s  -  %s", index, n, item.name, item.action)
             local result = perform(item, token, true)
             if result == "cancel" or token ~= moveToken then
                 break
@@ -2831,162 +2852,164 @@ function startTour()
     end)
 end
 
-local function cameraFlat()
-    local cam = workspace.CurrentCamera
-    if not cam then
+do
+    local function cameraFlat()
+        local cam = workspace.CurrentCamera
+        if not cam then
+            return Vector3.zero
+        end
+        local cf = cam.CFrame
+        local look = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+        local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
+        look = (look.Magnitude > 0.01) and look.Unit or Vector3.zero
+        right = (right.Magnitude > 0.01) and right.Unit or Vector3.zero
+        local dir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            dir += look
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            dir -= look
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            dir += right
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            dir -= right
+        end
+        if dir.Magnitude > 0.05 then
+            return dir.Unit
+        end
         return Vector3.zero
     end
-    local cf = cam.CFrame
-    local look = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
-    local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
-    look = (look.Magnitude > 0.01) and look.Unit or Vector3.zero
-    right = (right.Magnitude > 0.01) and right.Unit or Vector3.zero
-    local dir = Vector3.zero
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-        dir += look
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-        dir -= look
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-        dir += right
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-        dir -= right
-    end
-    if dir.Magnitude > 0.05 then
-        return dir.Unit
-    end
-    return Vector3.zero
-end
 
-local function stepMotion(dt)
-    if unloading then
-        return
-    end
-    if motion.noclipOn then
-        applyNoclip()
-    end
-    if motion.suppress > 0 then
-        return
-    end
-
-    local hrp, hum = humanoidRootPart, humanoid
-    if not hrp or not hum or not hrp.Parent or not hrp:IsDescendantOf(workspace) then
-        return
-    end
-
-    local wish = motion.wish
-    local flying = motion.flyOn
-    if not flying and not motion.speedOn and not wish then
-        return
-    end
-
-    local dir = Vector3.zero
-    local speed
-    if wish then
-        local flat = Vector3.new(wish.point.X - hrp.Position.X, 0, wish.point.Z - hrp.Position.Z)
-        if flat.Magnitude > 0.05 then
-            dir = flat.Unit
+    local function stepMotion(dt)
+        if unloading then
+            return
         end
-        speed = wish.speed
-    else
-        local md = hum.MoveDirection
-        local flat = Vector3.new(md.X, 0, md.Z)
-        if flat.Magnitude > 0.05 then
-            dir = flat.Unit
-        elseif flying then
-            dir = cameraFlat()
+        if motion.noclipOn then
+            applyNoclip()
         end
-        speed = flying and motion.flySpeed or motion.speed
+        if motion.suppress > 0 then
+            return
+        end
+
+        local hrp, hum = humanoidRootPart, humanoid
+        if not hrp or not hum or not hrp.Parent or not hrp:IsDescendantOf(workspace) then
+            return
+        end
+
+        local wish = motion.wish
+        local flying = motion.flyOn
+        if not flying and not motion.speedOn and not wish then
+            return
+        end
+
+        local dir = Vector3.zero
+        local speed
+        if wish then
+            local flat = Vector3.new(wish.point.X - hrp.Position.X, 0, wish.point.Z - hrp.Position.Z)
+            if flat.Magnitude > 0.05 then
+                dir = flat.Unit
+            end
+            speed = wish.speed
+        else
+            local md = hum.MoveDirection
+            local flat = Vector3.new(md.X, 0, md.Z)
+            if flat.Magnitude > 0.05 then
+                dir = flat.Unit
+            elseif flying then
+                dir = cameraFlat()
+            end
+            speed = flying and motion.flySpeed or motion.speed
+        end
+
+        -- Wish speed wins over the Speed module so the two do not stack.
+        -- Ground steps add (speed - walk speed) because the humanoid still moves at WalkSpeed.
+        if flying then
+            local drop = (motion.flyMode == "Glide") and (-motion.glideSink * dt) or 0
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            local step = dir * speed * dt
+            hrp.CFrame = hrp.CFrame + Vector3.new(step.X, drop, step.Z)
+            return
+        end
+
+        local vel = hrp.AssemblyLinearVelocity
+        hrp.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
+        if dir.Magnitude > 0 then
+            local boost = math.max(speed - NORMAL_SPEED, 0)
+            local step = dir * boost * dt
+            hrp.CFrame = hrp.CFrame + Vector3.new(step.X, 0, step.Z)
+        end
     end
 
-    -- Wish speed wins over the Speed module so the two do not stack.
-    -- Ground steps add (speed - walk speed) because the humanoid still moves at WalkSpeed.
-    if flying then
-        local drop = (motion.flyMode == "Glide") and (-motion.glideSink * dt) or 0
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        local step = dir * speed * dt
-        hrp.CFrame = hrp.CFrame + Vector3.new(step.X, drop, step.Z)
-        return
+    local function clickCorner()
+        local cam = workspace.CurrentCamera
+        local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+        local x, y = 6, math.max(vp.Y - 6, 6)
+        if isOverMainFrame(Vector2.new(x, y)) then
+            return
+        end
+        local sent = false
+        if VirtualInput then
+            sent = pcall(function()
+                VirtualInput:SendMouseButtonEvent(x, y, 0, true, game, 0)
+                VirtualInput:SendMouseButtonEvent(x, y, 0, false, game, 0)
+            end)
+        end
+        if not sent and type(mouse1click) == "function" then
+            pcall(mouse1click, x, y)
+        end
     end
 
-    local vel = hrp.AssemblyLinearVelocity
-    hrp.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
-    if dir.Magnitude > 0 then
-        local boost = math.max(speed - NORMAL_SPEED, 0)
-        local step = dir * boost * dt
-        hrp.CFrame = hrp.CFrame + Vector3.new(step.X, 0, step.Z)
-    end
-end
-
-local function clickCorner()
-    local cam = workspace.CurrentCamera
-    local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
-    local x, y = 6, math.max(vp.Y - 6, 6)
-    if isOverMainFrame(Vector2.new(x, y)) then
-        return
-    end
-    local sent = false
-    if VirtualInput then
-        sent = pcall(function()
-            VirtualInput:SendMouseButtonEvent(x, y, 0, true, game, 0)
-            VirtualInput:SendMouseButtonEvent(x, y, 0, false, game, 0)
-        end)
-    end
-    if not sent and type(mouse1click) == "function" then
-        pcall(mouse1click, x, y)
-    end
-end
-
-local clickAcc = 0
-table.insert(connections, RunService.Heartbeat:Connect(function(dt)
-    stepMotion(dt)
-    if not motion.clickOn then
+    local clickAcc = 0
+    table.insert(connections, RunService.Heartbeat:Connect(function(dt)
+        stepMotion(dt)
+        if not motion.clickOn then
+            clickAcc = 0
+            return
+        end
+        clickAcc += dt
+        if clickAcc < motion.clickInterval then
+            return
+        end
         clickAcc = 0
-        return
-    end
-    clickAcc += dt
-    if clickAcc < motion.clickInterval then
-        return
-    end
-    clickAcc = 0
-    clickCorner()
-end))
+        clickCorner()
+    end))
+end
 
 --==============================================================================
 -- 11. PRESETS, INPUT, WINDOW
 --==============================================================================
 
-AddBtn.Activated:Connect(function()
+ui.AddBtn.Activated:Connect(function()
     setPickMode(not pickMode)
 end)
 
-ListArrow.Activated:Connect(function()
+ui.ListArrow.Activated:Connect(function()
     local names = {}
     for i, l in ipairs(lists) do
         names[i] = string.format("%s  (%d)", l.name, #l.items)
     end
-    openDropdown(ListNameBox, names, activeList, function(_, idx)
+    openDropdown(ui.ListNameBox, names, activeList, function(_, idx)
         switchList(idx)
     end)
 end)
 
-ListNameBox.FocusLost:Connect(function()
-    local text = ListNameBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+ui.ListNameBox.FocusLost:Connect(function()
+    local text = ui.ListNameBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
     if text ~= "" then
         currentList().name = text
     end
-    ListNameBox.Text = currentList().name
+    ui.ListNameBox.Text = currentList().name
 end)
 
-NewListBtn.Activated:Connect(function()
+ui.NewListBtn.Activated:Connect(function()
     table.insert(lists, newList("List " .. (#lists + 1)))
     switchList(#lists)
     setStatus("New list created", "success")
 end)
 
-DelListBtn.Activated:Connect(function()
+ui.DelListBtn.Activated:Connect(function()
     task.spawn(function()
         local only = #lists <= 1
         local name = currentList().name
@@ -3014,23 +3037,23 @@ DelListBtn.Activated:Connect(function()
     end)
 end)
 
-DefSpeedBox.FocusLost:Connect(function()
-    local v = tonumber(DefSpeedBox.Text)
+ui.DefSpeedBox.FocusLost:Connect(function()
+    local v = tonumber(ui.DefSpeedBox.Text)
     if v and v > 0 then
         D.speed = v
     end
-    DefSpeedBox.Text = fmt(D.speed)
+    ui.DefSpeedBox.Text = fmt(D.speed)
 end)
 
-DefOffsetBox.FocusLost:Connect(function()
-    local v = tonumber(DefOffsetBox.Text)
+ui.DefOffsetBox.FocusLost:Connect(function()
+    local v = tonumber(ui.DefOffsetBox.Text)
     if v then
         D.offset = v
     end
-    DefOffsetBox.Text = fmt(D.offset)
+    ui.DefOffsetBox.Text = fmt(D.offset)
 end)
 
-ApplyAllBtn.Activated:Connect(function()
+ui.ApplyAllBtn.Activated:Connect(function()
     local list = currentList()
     for _, it in ipairs(list.items) do
         it.action, it.speed, it.offset = D.action, D.speed, D.offset
@@ -3040,16 +3063,16 @@ ApplyAllBtn.Activated:Connect(function()
     setStatus(string.format("Applied defaults to %d object(s)", #list.items), "success")
 end)
 
-IntervalBox.FocusLost:Connect(function()
-    local v = tonumber(IntervalBox.Text)
+ui.IntervalBox.FocusLost:Connect(function()
+    local v = tonumber(ui.IntervalBox.Text)
     if v then
         tour.interval = math.clamp(v, 0.02, 60)
-        IntervalSlider.Set(tour.interval)
+        ui.IntervalSlider.Set(tour.interval)
     end
-    IntervalBox.Text = fmt(tour.interval)
+    ui.IntervalBox.Text = fmt(tour.interval)
 end)
 
-StartBtn.Activated:Connect(function()
+ui.StartBtn.Activated:Connect(function()
     if touring then
         cancelMovement("Tour stopped")
     else
@@ -3057,202 +3080,204 @@ StartBtn.Activated:Connect(function()
     end
 end)
 
-local function getClipWriter()
-    return setclipboard or toclipboard or set_clipboard
-        or (syn and syn.write_clipboard) or (Clipboard and Clipboard.set)
-end
-
-local function getClipReader()
-    return getclipboard or get_clipboard
-        or (syn and syn.get_clipboard) or (Clipboard and Clipboard.get)
-end
-
-local function clipWrite(text)
-    local fn = getClipWriter()
-    return fn ~= nil and (pcall(fn, text))
-end
-
-local function clipRead()
-    local fn = getClipReader()
-    if not fn then
-        return nil
+do
+    local function getClipWriter()
+        return setclipboard or toclipboard or set_clipboard
+            or (syn and syn.write_clipboard) or (Clipboard and Clipboard.set)
     end
-    local ok, result = pcall(fn)
-    if ok and type(result) == "string" and result ~= "" then
-        return result
+
+    local function getClipReader()
+        return getclipboard or get_clipboard
+            or (syn and syn.get_clipboard) or (Clipboard and Clipboard.get)
     end
-    return nil
-end
 
-local function yesNo(v)
-    return v and "yes" or "no"
-end
-
-CapsLabel.Text = string.format("Clipboard copy: %s   |   Clipboard paste: %s   |   Files: %s",
-    yesNo(getClipWriter() ~= nil), yesNo(getClipReader() ~= nil), yesNo(writefile ~= nil and readfile ~= nil))
-
-local function buildExportJson()
-    local source = (exportScope == "All lists") and lists or { currentList() }
-    local out = {}
-    for _, l in ipairs(source) do
-        table.insert(out, { name = l.name, items = l.items })
+    local function clipWrite(text)
+        local fn = getClipWriter()
+        return fn ~= nil and (pcall(fn, text))
     end
-    return HttpService:JSONEncode({ version = 4, lists = out }), #out
-end
 
-local function validVec3(t)
-    return type(t) == "table" and type(t[1]) == "number" and type(t[2]) == "number" and type(t[3]) == "number"
-end
-
--- v2 presets stored tp and offset on the list. v3+ store them on each item.
-local function normalizeItem(raw, fallbackTp, fallbackOffset)
-    if type(raw) ~= "table" or type(raw.name) ~= "string" or type(raw.path) ~= "table" or #raw.path == 0 then
-        return nil
-    end
-    for _, part in ipairs(raw.path) do
-        if type(part) ~= "string" then
+    local function clipRead()
+        local fn = getClipReader()
+        if not fn then
             return nil
         end
-    end
-
-    local tp = type(raw.tp) == "table" and raw.tp or fallbackTp
-    local pause = (type(raw.pause) == "number" and raw.pause > 0) and raw.pause or nil
-    local pauseWhen = PAUSE_SET[raw.pauseWhen] and raw.pauseWhen or "After"
-    if not pause and type(raw.wait) == "number" and raw.wait > 0 then
-        pause = raw.wait
-        pauseWhen = "After"
-    end
-
-    return {
-        name = raw.name,
-        class = type(raw.class) == "string" and raw.class or "?",
-        path = raw.path,
-        pos = validVec3(raw.pos) and raw.pos or nil,
-        half = validVec3(raw.half) and raw.half or nil,
-        action = ACTION_SET[raw.action] and raw.action or "Teleport",
-        speed = (type(raw.speed) == "number" and raw.speed > 0) and raw.speed or D.speed,
-        pause = pause,
-        pauseWhen = pauseWhen,
-        origin = (raw.origin == "Custom") and "Custom" or "Object",
-        tp = {
-            x = TP_SET[tp and tp.x] and tp.x or "Center",
-            y = TP_SET[tp and tp.y] and tp.y or "End",
-            z = TP_SET[tp and tp.z] and tp.z or "Center",
-        },
-        offset = type(raw.offset) == "number" and raw.offset
-            or (type(fallbackOffset) == "number" and fallbackOffset or 3),
-        custom = validVec3(raw.custom) and { raw.custom[1], raw.custom[2], raw.custom[3] } or { 0, 0, 0 },
-    }
-end
-
-local function nameTaken(name)
-    for _, l in ipairs(lists) do
-        if l.name == name then
-            return true
+        local ok, result = pcall(fn)
+        if ok and type(result) == "string" and result ~= "" then
+            return result
         end
-    end
-    return false
-end
-
-local function importJson(text)
-    local ok, data = pcall(function()
-        return HttpService:JSONDecode(text)
-    end)
-    if not ok or type(data) ~= "table" or type(data.lists) ~= "table" then
-        return false, "That doesn't look like a valid preset"
+        return nil
     end
 
-    local importedLists, importedItems = 0, 0
-    for _, l in ipairs(data.lists) do
-        if type(l) == "table" and type(l.name) == "string" and type(l.items) == "table" then
-            local name, k = l.name, 1
-            while nameTaken(name) do
-                k += 1
-                name = string.format("%s (%d)", l.name, k)
+    local function yesNo(v)
+        return v and "yes" or "no"
+    end
+
+    ui.CapsLabel.Text = string.format("Clipboard copy: %s   |   Clipboard paste: %s   |   Files: %s",
+        yesNo(getClipWriter() ~= nil), yesNo(getClipReader() ~= nil), yesNo(writefile ~= nil and readfile ~= nil))
+
+    local function buildExportJson()
+        local source = (exportScope == "All lists") and lists or { currentList() }
+        local out = {}
+        for _, l in ipairs(source) do
+            table.insert(out, { name = l.name, items = l.items })
+        end
+        return HttpService:JSONEncode({ version = 4, lists = out }), #out
+    end
+
+    local function validVec3(t)
+        return type(t) == "table" and type(t[1]) == "number" and type(t[2]) == "number" and type(t[3]) == "number"
+    end
+
+    -- v2 presets stored tp and offset on the list. v3+ store them on each item.
+    local function normalizeItem(raw, fallbackTp, fallbackOffset)
+        if type(raw) ~= "table" or type(raw.name) ~= "string" or type(raw.path) ~= "table" or #raw.path == 0 then
+            return nil
+        end
+        for _, part in ipairs(raw.path) do
+            if type(part) ~= "string" then
+                return nil
             end
+        end
 
-            local list = newList(name)
-            for _, raw in ipairs(l.items) do
-                local item = normalizeItem(raw, l.tp, l.offset)
-                if item then
-                    table.insert(list.items, item)
+        local tp = type(raw.tp) == "table" and raw.tp or fallbackTp
+        local pause = (type(raw.pause) == "number" and raw.pause > 0) and raw.pause or nil
+        local pauseWhen = PAUSE_SET[raw.pauseWhen] and raw.pauseWhen or "After"
+        if not pause and type(raw.wait) == "number" and raw.wait > 0 then
+            pause = raw.wait
+            pauseWhen = "After"
+        end
+
+        return {
+            name = raw.name,
+            class = type(raw.class) == "string" and raw.class or "?",
+            path = raw.path,
+            pos = validVec3(raw.pos) and raw.pos or nil,
+            half = validVec3(raw.half) and raw.half or nil,
+            action = ACTION_SET[raw.action] and raw.action or "Teleport",
+            speed = (type(raw.speed) == "number" and raw.speed > 0) and raw.speed or D.speed,
+            pause = pause,
+            pauseWhen = pauseWhen,
+            origin = (raw.origin == "Custom") and "Custom" or "Object",
+            tp = {
+                x = TP_SET[tp and tp.x] and tp.x or "Center",
+                y = TP_SET[tp and tp.y] and tp.y or "End",
+                z = TP_SET[tp and tp.z] and tp.z or "Center",
+            },
+            offset = type(raw.offset) == "number" and raw.offset
+                or (type(fallbackOffset) == "number" and fallbackOffset or 3),
+            custom = validVec3(raw.custom) and { raw.custom[1], raw.custom[2], raw.custom[3] } or { 0, 0, 0 },
+        }
+    end
+
+    local function nameTaken(name)
+        for _, l in ipairs(lists) do
+            if l.name == name then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function importJson(text)
+        local ok, data = pcall(function()
+            return HttpService:JSONDecode(text)
+        end)
+        if not ok or type(data) ~= "table" or type(data.lists) ~= "table" then
+            return false, "That doesn't look like a valid preset"
+        end
+
+        local importedLists, importedItems = 0, 0
+        for _, l in ipairs(data.lists) do
+            if type(l) == "table" and type(l.name) == "string" and type(l.items) == "table" then
+                local name, k = l.name, 1
+                while nameTaken(name) do
+                    k += 1
+                    name = string.format("%s (%d)", l.name, k)
                 end
+
+                local list = newList(name)
+                for _, raw in ipairs(l.items) do
+                    local item = normalizeItem(raw, l.tp, l.offset)
+                    if item then
+                        table.insert(list.items, item)
+                    end
+                end
+                table.insert(lists, list)
+                importedLists += 1
+                importedItems += #list.items
             end
-            table.insert(lists, list)
-            importedLists += 1
-            importedItems += #list.items
         end
+
+        if importedLists == 0 then
+            return false, "No valid lists found in that preset"
+        end
+        switchList(#lists)
+        return true, string.format("Imported %d list(s), %d object(s)", importedLists, importedItems)
     end
 
-    if importedLists == 0 then
-        return false, "No valid lists found in that preset"
-    end
-    switchList(#lists)
-    return true, string.format("Imported %d list(s), %d object(s)", importedLists, importedItems)
+    ui.CopyBtn.Activated:Connect(function()
+        local json, count = buildExportJson()
+        if clipWrite(json) then
+            setStatus(string.format("Copied %d list(s) to clipboard", count), "success")
+        else
+            ui.JsonBox.Text = json
+            setStatus("Clipboard not supported. JSON is in the field below.", "warn")
+        end
+    end)
+
+    ui.SaveBtn.Activated:Connect(function()
+        if not writefile then
+            setStatus("File writing is not available", "error")
+            return
+        end
+        local json, count = buildExportJson()
+        if pcall(writefile, PRESET_FILE, json) then
+            setStatus(string.format("Saved %d list(s) to workspace/%s", count, PRESET_FILE), "success")
+        else
+            setStatus("Failed to write the file", "error")
+        end
+    end)
+
+    ui.PasteBtn.Activated:Connect(function()
+        local text = clipRead()
+        if not text then
+            setStatus("Can't read the clipboard. Paste JSON into the field and press Import.", "warn")
+            return
+        end
+        local ok, msg = importJson(text)
+        setStatus(msg .. (ok and " from clipboard" or ""), ok and "success" or "error")
+    end)
+
+    ui.LoadBtn.Activated:Connect(function()
+        if not (readfile and isfile) then
+            setStatus("File reading is not available", "error")
+            return
+        end
+        if not isfile(PRESET_FILE) then
+            setStatus("File not found: workspace/" .. PRESET_FILE, "warn")
+            return
+        end
+        local ok, text = pcall(readfile, PRESET_FILE)
+        if not ok then
+            setStatus("Failed to read the file", "error")
+            return
+        end
+        local success, msg = importJson(text)
+        setStatus(msg .. (success and " from file" or ""), success and "success" or "error")
+    end)
+
+    ui.ImportTextBtn.Activated:Connect(function()
+        if ui.JsonBox.Text == "" then
+            setStatus("Paste JSON into the field first", "warn")
+            return
+        end
+        local ok, msg = importJson(ui.JsonBox.Text)
+        setStatus(msg, ok and "success" or "error")
+        if ok then
+            ui.JsonBox.Text = ""
+        end
+    end)
 end
-
-CopyBtn.Activated:Connect(function()
-    local json, count = buildExportJson()
-    if clipWrite(json) then
-        setStatus(string.format("Copied %d list(s) to clipboard", count), "success")
-    else
-        JsonBox.Text = json
-        setStatus("Clipboard not supported. JSON is in the field below.", "warn")
-    end
-end)
-
-SaveBtn.Activated:Connect(function()
-    if not writefile then
-        setStatus("File writing is not available", "error")
-        return
-    end
-    local json, count = buildExportJson()
-    if pcall(writefile, PRESET_FILE, json) then
-        setStatus(string.format("Saved %d list(s) to workspace/%s", count, PRESET_FILE), "success")
-    else
-        setStatus("Failed to write the file", "error")
-    end
-end)
-
-PasteBtn.Activated:Connect(function()
-    local text = clipRead()
-    if not text then
-        setStatus("Can't read the clipboard. Paste JSON into the field and press Import.", "warn")
-        return
-    end
-    local ok, msg = importJson(text)
-    setStatus(msg .. (ok and " from clipboard" or ""), ok and "success" or "error")
-end)
-
-LoadBtn.Activated:Connect(function()
-    if not (readfile and isfile) then
-        setStatus("File reading is not available", "error")
-        return
-    end
-    if not isfile(PRESET_FILE) then
-        setStatus("File not found: workspace/" .. PRESET_FILE, "warn")
-        return
-    end
-    local ok, text = pcall(readfile, PRESET_FILE)
-    if not ok then
-        setStatus("Failed to read the file", "error")
-        return
-    end
-    local success, msg = importJson(text)
-    setStatus(msg .. (success and " from file" or ""), success and "success" or "error")
-end)
-
-ImportTextBtn.Activated:Connect(function()
-    if JsonBox.Text == "" then
-        setStatus("Paste JSON into the field first", "warn")
-        return
-    end
-    local ok, msg = importJson(JsonBox.Text)
-    setStatus(msg, ok and "success" or "error")
-    if ok then
-        JsonBox.Text = ""
-    end
-end)
 
 local DOF
 pcall(function()
@@ -3469,7 +3494,7 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(inp, game
     end
 end))
 
-HideDot.Activated:Connect(function()
+ui.HideDot.Activated:Connect(function()
     if dialogBusy then
         return
     end
@@ -3477,11 +3502,11 @@ HideDot.Activated:Connect(function()
     notify("RightShift to show", "info")
 end)
 
-CenterDot.Activated:Connect(function()
+ui.CenterDot.Activated:Connect(function()
     tween(MainFrame, { Position = UDim2.new(0.5, -WIN_W / 2, 0.5, -WIN_H / 2) }, 0.35)
 end)
 
-CloseDot.Activated:Connect(function()
+ui.CloseDot.Activated:Connect(function()
     task.spawn(function()
         local ok = confirm({
             title = "Close Haruko",
@@ -3517,8 +3542,8 @@ local function bindDrag(handle)
         end
     end)
 end
-bindDrag(Topbar)
-bindDrag(DragStrip)
+bindDrag(ui.Topbar)
+bindDrag(ui.DragStrip)
 
 table.insert(connections, UserInputService.InputChanged:Connect(function(inp)
     if inp == dragInput and dragging then
