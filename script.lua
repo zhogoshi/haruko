@@ -9,6 +9,7 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
 local Lighting = game:GetService("Lighting")
+local RobloxSettings = settings
 
 local VirtualInput
 pcall(function()
@@ -80,7 +81,6 @@ local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 -- 2. THEME, CONFIG, STATE
 --==============================================================================
 
-local PRESET_FILE = "AdminPanel_Presets.json"
 local VERSION = "v4"
 local ACTIONS = { "Teleport", "Walk", "Glide" }
 local ACTION_SET = { Teleport = true, Walk = true, Glide = true }
@@ -135,8 +135,13 @@ local motion = {
     speed = 300,
     flyOn = false,
     flyMode = "Default",
-    flySpeed = 80,
+    flySpeed = 60,
     glideSink = 10,
+    glideVel = Vector3.zero,
+    antiPauseOn = false,
+    renderOn = false,
+    render = { keep = true, quality = true, fog = false },
+    renderSaved = {},
     teleportOn = false,
     tpOrigin = "Center",
     tpOffset = 3,
@@ -177,6 +182,8 @@ local setPickMode
 local refreshList, refreshESP, switchList
 local goItem, cancelMovement, startTour, updateTourUI
 local hoverHighlight
+local persistNow
+local syncers = {}
 local showPage
 local pages = {}
 local ui = {}
@@ -213,8 +220,135 @@ local function setNoclip(on)
     end
 end
 
+local function setAntiPause(on)
+    motion.antiPauseOn = on
+    pcall(function()
+        game:GetService("GuiService"):SetGameplayPausedNotificationEnabled(not on)
+    end)
+    if motion.pauseConn then
+        motion.pauseConn:Disconnect()
+        motion.pauseConn = nil
+    end
+
+    local function writeIntegrity(mode)
+        local set = sethiddenproperty or set_hidden_property
+        if not (set and pcall(set, workspace, "StreamingIntegrityMode", mode)) then
+            pcall(function()
+                workspace.StreamingIntegrityMode = mode
+            end)
+        end
+    end
+
+    if not on then
+        if motion.integrity then
+            writeIntegrity(motion.integrity)
+            motion.integrity = nil
+        end
+        return
+    end
+
+    if motion.integrity == nil then
+        local get = gethiddenproperty or get_hidden_property
+        local ok, mode = pcall(function()
+            return get and get(workspace, "StreamingIntegrityMode") or workspace.StreamingIntegrityMode
+        end)
+        motion.integrity = ok and mode or false
+    end
+    writeIntegrity(Enum.StreamingIntegrityMode.Disabled)
+
+    local function resume()
+        pcall(function()
+            if player.GameplayPaused then
+                player.GameplayPaused = false
+            end
+        end)
+    end
+    resume()
+    pcall(function()
+        motion.pauseConn = player:GetPropertyChangedSignal("GameplayPaused"):Connect(resume)
+    end)
+end
+
+local function setRender(on)
+    motion.renderOn = on
+    local opt, saved = motion.render, motion.renderSaved
+
+    local function enum(category, name)
+        local ok, item = pcall(function()
+            return Enum[category][name]
+        end)
+        return ok and item or nil
+    end
+
+    local function read(obj, prop)
+        local get = gethiddenproperty or get_hidden_property
+        local ok, value = pcall(function()
+            if get then
+                return (get(obj, prop))
+            end
+            return obj[prop]
+        end)
+        return ok and value or nil
+    end
+
+    local function write(obj, prop, value)
+        local set = sethiddenproperty or set_hidden_property
+        if not (set and pcall(set, obj, prop, value)) then
+            pcall(function()
+                obj[prop] = value
+            end)
+        end
+    end
+
+    local function apply(key, obj, prop, value, enabled)
+        if not obj or value == nil then
+            return
+        end
+        if on and enabled then
+            if saved[key] == nil then
+                saved[key] = read(obj, prop)
+            end
+            write(obj, prop, value)
+        elseif saved[key] ~= nil then
+            write(obj, prop, saved[key])
+            saved[key] = nil
+        end
+    end
+
+    local rendering, userSettings
+    pcall(function()
+        rendering = RobloxSettings().Rendering
+    end)
+    pcall(function()
+        userSettings = UserSettings():GetService("UserGameSettings")
+    end)
+    local atmosphere = Lighting:FindFirstChildOfClass("Atmosphere")
+
+    apply("streamOut", workspace, "StreamOutBehavior", enum("StreamOutBehavior", "LowMemory"), opt.keep)
+    apply("targetRadius", workspace, "StreamingTargetRadius", 100000, opt.keep)
+    apply("quality", rendering, "QualityLevel", enum("QualityLevel", "Level21"), opt.quality)
+    apply("savedQuality", userSettings, "SavedQualityLevel", enum("SavedQualitySetting", "QualityLevel10"), opt.quality)
+    apply("meshDetail", rendering, "MeshPartDetailLevel", enum("MeshPartDetailLevel", "Level04"), opt.quality)
+    apply("fogEnd", Lighting, "FogEnd", 1e6, opt.fog)
+    apply("fogStart", Lighting, "FogStart", 1e6, opt.fog)
+    apply("haze", atmosphere, "Density", 0, opt.fog)
+end
+
+local function dropFlyBody()
+    for _, key in ipairs({ "flyVel", "flyGyro" }) do
+        if motion[key] then
+            motion[key]:Destroy()
+            motion[key] = nil
+        end
+    end
+end
+
 local function setFly(on)
     motion.flyOn = on
+    motion.glideVel = Vector3.zero
+    if not on then
+        dropFlyBody()
+    end
     local hum = humanoid
     if not hum or not hum.Parent then
         return
@@ -240,6 +374,7 @@ local function attachCharacter(char)
     humanoid = char:WaitForChild("Humanoid", 8)
     motion.wish = nil
     collideState = {}
+    dropFlyBody()
     if motion.flyOn and humanoid then
         humanoid.PlatformStand = true
     end
@@ -443,6 +578,20 @@ local function makeIcon(parent, kind, size, color)
         ring(11, 0, 0, 5.5)
         dot(2, 0, -2.6)
         bar(1.8, 4.2, 0, 1.6)
+    elseif kind == "eye" then
+        local lens = new("Frame", place(14, 8, 0, 0), box)
+        lens.BackgroundTransparency = 1
+        round(lens, 4 * k)
+        table.insert(strokes, new("UIStroke", {
+            Color = color,
+            Thickness = math.max(1.5 * k, 1),
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        }, lens))
+        dot(3.6, 0, 0)
+    elseif kind == "clock" then
+        ring(13, 0, 0, 6.5)
+        bar(1.6, 4.6, 0, -1.9)
+        bar(3.6, 1.6, 1.4, 0)
     elseif kind == "warn" then
         bar(1.8, 6.2, 0, -1.1)
         dot(2.2, 0, 3.5)
@@ -559,15 +708,22 @@ local DialogHost = new("Frame", {
 
 local ToastHost = new("Frame", {
     Name = "ToastHost",
-    AnchorPoint = Vector2.new(0.5, 0),
-    Position = UDim2.new(0.5, 0, 0, 56),
-    Size = UDim2.fromOffset(340, 0),
-    AutomaticSize = Enum.AutomaticSize.Y,
+    AnchorPoint = Vector2.new(1, 1),
+    Position = UDim2.new(1, -20, 1, -20),
+    Size = UDim2.fromOffset(360, 360),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
     ZIndex = 40,
     Active = false,
 }, ScreenGui)
+
+local glass = { [MainFrame] = { radius = CORNER } }
+
+local function applyOpacity()
+    for gui in pairs(glass) do
+        gui.BackgroundTransparency = 1 - settings.opacity
+    end
+end
 
 --==============================================================================
 -- 5. WIDGETS
@@ -949,14 +1105,10 @@ local function closeDropdown(instant)
         p:Destroy()
         return
     end
-    local stroke = p:FindFirstChildOfClass("UIStroke")
-    tween(p, { BackgroundTransparency = 1 }, 0.12)
-    if stroke then
-        tween(stroke, { Transparency = 1 }, 0.12)
-    end
+    tween(p, { GroupTransparency = 1 }, 0.12)
     local sc = p:FindFirstChildOfClass("UIScale")
     if sc then
-        tween(sc, { Scale = 0.96 }, 0.12)
+        tween(sc, { Scale = 0.97 }, 0.12)
     end
     task.delay(0.14, function()
         if p then
@@ -977,24 +1129,24 @@ local function openDropdown(anchor, options, selected, onSelect)
     local w = math.max(anchor.AbsoluteSize.X, 140)
     local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
     local absPos, absSize = anchor.AbsolutePosition, anchor.AbsoluteSize
-    local below = absPos.Y + absSize.Y + 6 + h <= view.Y - 8
-    local y = below and (absPos.Y + absSize.Y + 6) or (absPos.Y - 6)
-    local x = math.clamp(absPos.X + absSize.X / 2, w / 2 + 8, math.max(view.X - w / 2 - 8, w / 2 + 8))
+    local below = absPos.Y + absSize.Y + 4 + h <= view.Y - 8
+    local y = below and (absPos.Y + absSize.Y + 4) or (absPos.Y - 4)
+    local x = math.clamp(absPos.X, 8, math.max(view.X - w - 8, 8))
 
-    local popup = new("Frame", {
+    local popup = new("CanvasGroup", {
         Name = "Popup",
-        AnchorPoint = Vector2.new(0.5, below and 0 or 1),
+        AnchorPoint = Vector2.new(0, below and 0 or 1),
         Position = UDim2.fromOffset(x, y),
         Size = UDim2.fromOffset(w, h),
         BackgroundColor3 = T.Menu,
-        BackgroundTransparency = 0.62,
+        BackgroundTransparency = 0,
+        GroupTransparency = 1,
         BorderSizePixel = 0,
-        ClipsDescendants = true,
         ZIndex = 2,
     }, Overlay)
     round(popup, 10)
-    hairline(popup, 0.72)
-    local sc = new("UIScale", { Scale = 0.96 }, popup)
+    hairline(popup, 0.8)
+    local sc = new("UIScale", { Scale = 0.97 }, popup)
 
     local scroll = new("ScrollingFrame", {
         Size = UDim2.fromScale(1, 1),
@@ -1048,7 +1200,7 @@ local function openDropdown(anchor, options, selected, onSelect)
 
     activePopup = popup
     Overlay.Visible = true
-    tween(popup, { BackgroundTransparency = 0.38 }, 0.16)
+    tween(popup, { GroupTransparency = 0 }, 0.14)
     tween(sc, { Scale = 1 }, 0.18)
 end
 
@@ -1106,20 +1258,23 @@ end
 local notify
 
 do
-    local TOAST_H, TOAST_GAP = 48, 8
+    local TOAST_W, TOAST_H, TOAST_GAP, TOAST_LIFE = 360, 68, 10, 4.5
+    local OFFSCREEN = TOAST_W + 40
     local toasts = {}
     local KIND = {
-        info = { color = T.AccentHi, icon = "info" },
-        success = { color = T.Success, icon = "check" },
-        warn = { color = T.Warning, icon = "warn" },
-        error = { color = T.Danger, icon = "close" },
+        info = { color = T.AccentHi, icon = "info", title = "Info" },
+        success = { color = T.Success, icon = "check", title = "Done" },
+        warn = { color = T.Warning, icon = "warn", title = "Heads up" },
+        error = { color = T.Danger, icon = "close", title = "Error" },
     }
+
+    local function slotY(i)
+        return -(#toasts - i) * (TOAST_H + TOAST_GAP)
+    end
 
     local function layoutToasts()
         for i, item in ipairs(toasts) do
-            if item.alive then
-                tween(item.frame, { Position = UDim2.fromOffset(0, (i - 1) * (TOAST_H + TOAST_GAP)) }, 0.22)
-            end
+            tween(item.frame, { Position = UDim2.new(0, 0, 1, slotY(i)) }, 0.3)
         end
     end
 
@@ -1128,17 +1283,15 @@ do
             return
         end
         item.alive = false
-        local pos = item.frame.Position
-        tween(item.frame, { GroupTransparency = 1, Position = pos - UDim2.fromOffset(0, 12) }, 0.2)
         local idx = table.find(toasts, item)
         if idx then
             table.remove(toasts, idx)
         end
+        local y = item.frame.Position.Y.Offset
+        tween(item.frame, { Position = UDim2.new(0, OFFSCREEN, 1, y), GroupTransparency = 1 }, 0.28, Enum.EasingStyle.Quart)
         layoutToasts()
-        task.delay(0.22, function()
-            if item.frame then
-                item.frame:Destroy()
-            end
+        task.delay(0.3, function()
+            item.frame:Destroy()
         end)
     end
 
@@ -1150,27 +1303,40 @@ do
         end
 
         local frame = new("CanvasGroup", {
-            Size = UDim2.fromOffset(340, TOAST_H),
-            BackgroundColor3 = T.Menu,
-            BackgroundTransparency = 0.12,
+            AnchorPoint = Vector2.new(0, 1),
+            Size = UDim2.fromOffset(TOAST_W, TOAST_H),
+            BackgroundColor3 = T.Window,
+            BackgroundTransparency = 1 - settings.opacity,
             GroupTransparency = 1,
             BorderSizePixel = 0,
             Active = true,
         }, ToastHost)
         round(frame, 12)
-        hairline(frame, 0.82)
+        glass[frame] = { radius = 12 }
+        new("UIStroke", {
+            Color = meta.color,
+            Transparency = 0.55,
+            Thickness = 1,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+        }, frame)
 
-        local accent = new("Frame", {
-            Position = UDim2.fromOffset(8, 10),
-            Size = UDim2.fromOffset(3, TOAST_H - 20),
+        local badge = new("Frame", {
+            Position = UDim2.fromOffset(14, 16),
+            Size = UDim2.fromOffset(32, 32),
             BackgroundColor3 = meta.color,
+            BackgroundTransparency = 0.82,
             BorderSizePixel = 0,
         }, frame)
-        round(accent, 2)
+        round(badge, 16)
+        local ic = makeIcon(badge, meta.icon, 16, meta.color)
+        ic.Frame.Position = UDim2.new(0.5, -8, 0.5, -8)
 
-        local ic = makeIcon(frame, meta.icon, 16, meta.color)
-        ic.Frame.Position = UDim2.fromOffset(20, 16)
-        label(frame, text, UDim2.fromOffset(44, 0), UDim2.new(1, -80, 1, 0), {
+        label(frame, meta.title, UDim2.fromOffset(58, 14), UDim2.new(1, -110, 0, 18), {
+            font = F.Bold,
+            size = 14,
+            color = meta.color,
+        })
+        label(frame, text, UDim2.fromOffset(58, 33), UDim2.new(1, -110, 0, 18), {
             font = F.Medium,
             size = 13,
             truncate = Enum.TextTruncate.AtEnd,
@@ -1178,25 +1344,44 @@ do
 
         local item = { alive = true, frame = frame }
         local close = new("TextButton", {
-            AnchorPoint = Vector2.new(1, 0.5),
-            Position = UDim2.new(1, -8, 0.5, 0),
-            Size = UDim2.fromOffset(22, 22),
-            BackgroundTransparency = 1,
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, -12, 0, 12),
+            Size = UDim2.fromOffset(28, 28),
+            BackgroundColor3 = T.White,
+            BackgroundTransparency = 0.92,
             Text = "",
             AutoButtonColor = false,
+            BorderSizePixel = 0,
             ZIndex = 2,
         }, frame)
-        local xic = makeIcon(close, "close", 10, T.Muted)
-        xic.Frame.Position = UDim2.new(0.5, -5, 0.5, -5)
+        round(close, 8)
+        local xic = makeIcon(close, "close", 14, T.Text)
+        xic.Frame.Position = UDim2.new(0.5, -7, 0.5, -7)
+        close.MouseEnter:Connect(function()
+            tween(close, { BackgroundTransparency = 0.8 }, 0.1)
+        end)
+        close.MouseLeave:Connect(function()
+            tween(close, { BackgroundTransparency = 0.92 }, 0.12)
+        end)
         close.Activated:Connect(function()
             dismiss(item)
         end)
 
+        local bar = new("Frame", {
+            AnchorPoint = Vector2.new(0, 1),
+            Position = UDim2.fromScale(0, 1),
+            Size = UDim2.new(1, 0, 0, 3),
+            BackgroundColor3 = meta.color,
+            BackgroundTransparency = 0.2,
+            BorderSizePixel = 0,
+        }, frame)
+        tween(bar, { Size = UDim2.new(0, 0, 0, 3) }, TOAST_LIFE, Enum.EasingStyle.Linear)
+
         table.insert(toasts, item)
-        local y = (#toasts - 1) * (TOAST_H + TOAST_GAP)
-        frame.Position = UDim2.fromOffset(0, y - 14)
-        tween(frame, { Position = UDim2.fromOffset(0, y), GroupTransparency = 0 }, 0.26)
-        task.delay(4, function()
+        frame.Position = UDim2.new(0, OFFSCREEN, 1, 0)
+        tween(frame, { GroupTransparency = 0 }, 0.3)
+        layoutToasts()
+        task.delay(TOAST_LIFE, function()
             dismiss(item)
         end)
     end
@@ -1207,7 +1392,6 @@ local function setStatus(text, kind)
 end
 
 local dialogBusy = false
-local dialogGen = 0
 local dialogFinish = function() end
 local confirm
 
@@ -1228,12 +1412,13 @@ do
         AnchorPoint = Vector2.new(0.5, 0.5),
         Size = UDim2.fromOffset(348, 172),
         BackgroundColor3 = T.Window,
-        BackgroundTransparency = 0.04,
+        BackgroundTransparency = 1 - settings.opacity,
         BorderSizePixel = 0,
         ZIndex = 2,
         Active = true,
     }, DialogHost)
     round(DialogCard, 14)
+    glass[DialogCard] = { radius = 14 }
     hairline(DialogCard, 0.8)
     local DialogScale = new("UIScale", { Scale = 1 }, DialogCard)
 
@@ -1443,8 +1628,7 @@ do
         General = { "General", "Modules you can toggle and bind" },
         Objects = { "Objects", "Pick objects in the world and set an action for each" },
         Tour = { "Tour", "Defaults for new objects and the automatic tour" },
-        Presets = { "Presets", "Back up or share your lists" },
-        Settings = { "Settings", "Window material and background blur" },
+        Settings = { "Settings", "Appearance, configs and locations" },
     }
 
     local tabs = {}
@@ -1458,7 +1642,6 @@ do
         closeDropdown(true)
         pageToken += 1
         local token = pageToken
-        local prev = currentPage and pages[currentPage]
         currentPage = name
 
         for tabName, tab in pairs(tabs) do
@@ -1475,23 +1658,30 @@ do
         PageSubtitle.Text = PAGE_INFO[name][2]
 
         local page = pages[name]
-        if prev then
-            tween(prev, { Position = UDim2.fromOffset(0, 8) }, 0.12)
-            task.delay(0.13, function()
-                if token == pageToken and prev ~= page then
-                    prev.Visible = false
-                    prev.Position = UDim2.fromOffset(0, 0)
-                end
-            end)
+        for _, other in pairs(pages) do
+            if other ~= page and other.Visible then
+                tween(other, { Position = UDim2.fromOffset(0, 8), GroupTransparency = 1 }, instant and 0 or 0.14)
+                task.delay(instant and 0 or 0.15, function()
+                    if token == pageToken then
+                        other.Visible = false
+                        other.Position = UDim2.fromOffset(0, 0)
+                    end
+                end)
+            end
         end
 
         page.Visible = true
         if instant then
             page.Position = UDim2.fromOffset(0, 0)
-        else
-            page.Position = UDim2.fromOffset(0, 10)
-            tween(page, { Position = UDim2.fromOffset(0, 0) }, 0.24)
+            page.GroupTransparency = 0
+            return
         end
+        PageTitle.TextTransparency, PageSubtitle.TextTransparency = 1, 1
+        tween(PageTitle, { TextTransparency = 0 }, 0.25)
+        tween(PageSubtitle, { TextTransparency = 0 }, 0.3)
+        page.Position = UDim2.fromOffset(0, 12)
+        page.GroupTransparency = 1
+        tween(page, { Position = UDim2.fromOffset(0, 0), GroupTransparency = 0 }, 0.28)
     end
 
     local function addPage(name, iconKind, order)
@@ -1528,10 +1718,11 @@ do
             showPage(name)
         end)
 
-        local page = new("Frame", {
+        local page = new("CanvasGroup", {
             Name = name,
             Size = UDim2.fromScale(1, 1),
             BackgroundTransparency = 1,
+            GroupTransparency = 1,
             Visible = false,
         }, Content)
         pages[name] = page
@@ -1541,8 +1732,7 @@ do
     addPage("General", "grid", 1)
     addPage("Objects", "cube", 2)
     addPage("Tour", "target", 3)
-    addPage("Presets", "lines", 4)
-    addPage("Settings", "gear", 5)
+    addPage("Settings", "gear", 4)
 end
 
 --==============================================================================
@@ -1622,7 +1812,7 @@ do
             LayoutOrder = order,
         }, parent)
         round(cardFrame, 10)
-        hairline(cardFrame, 0.92)
+        local edge = hairline(cardFrame, 0.92)
 
         local head = new("Frame", {
             Size = UDim2.new(1, 0, 0, MOD_HEAD),
@@ -1688,10 +1878,22 @@ do
             BorderSizePixel = 0,
         }, head)
         round(chip, 6)
-
-        local sw = switch(head, UDim2.new(1, -46, 0.5, -12), false, function(on)
-            def.onToggle(on)
+        chip.MouseEnter:Connect(function()
+            tween(chip, { BackgroundTransparency = 0.82 }, 0.1)
         end)
+        chip.MouseLeave:Connect(function()
+            tween(chip, { BackgroundTransparency = 0.9 }, 0.12)
+        end)
+
+        local function paint(on)
+            icon.SetColor(on and T.AccentHi or T.Text, true)
+            tween(edge, { Color = on and T.Accent or T.White, Transparency = on and 0.45 or 0.92 }, 0.2)
+        end
+        local function toggle(on)
+            paint(on)
+            def.onToggle(on)
+        end
+        local sw = switch(head, UDim2.new(1, -46, 0.5, -12), false, toggle)
 
         chip.Activated:Connect(function()
             if listening == def.id then
@@ -1708,6 +1910,7 @@ do
             listening = def.id
             chip.Text = "..."
             chip.TextColor3 = T.AccentHi
+            notify("Press a key. Backspace unbinds, Esc cancels", "info")
         end)
 
         if bodyH > 0 then
@@ -1719,7 +1922,15 @@ do
             def.build(body)
         end
 
-        modUi[def.id] = { bind = nil, chip = chip, switch = sw, onToggle = def.onToggle }
+        modUi[def.id] = {
+            name = def.name,
+            persist = def.persist,
+            bind = nil,
+            chip = chip,
+            switch = sw,
+            onToggle = toggle,
+            paint = paint,
+        }
     end
 
     local moduleSpecs = {
@@ -1729,6 +1940,7 @@ do
             desc = "Boost horizontal movement",
             icon = "fast",
             body = 78,
+            persist = true,
             onToggle = function(on)
                 motion.speedOn = on
             end,
@@ -1748,20 +1960,24 @@ do
                     end
                     box.Text = tostring(motion.speed)
                 end)
+                table.insert(syncers, function()
+                    sl.Set(motion.speed)
+                    box.Text = tostring(motion.speed)
+                end)
             end,
         },
         {
             id = "fly",
             name = "Fly",
-            desc = "Hover, or glide downward",
+            desc = "Classic flight, or a gliding dive",
             icon = "fly",
-            body = 156,
+            body = 184,
             onToggle = function(on)
                 setFly(on)
             end,
             build = function(body)
                 label(body, "Mode", UDim2.fromOffset(12, 4), UDim2.fromOffset(80, 16), { color = T.Muted, size = 12 })
-                segmented(body, UDim2.fromOffset(12, 22), UDim2.fromOffset(colW - 24, 28), { "Default", "Glide" }, motion.flyMode, function(v)
+                local mode = segmented(body, UDim2.fromOffset(12, 22), UDim2.fromOffset(colW - 24, 28), { "Default", "Glide" }, motion.flyMode, function(v)
                     motion.flyMode = v
                 end)
                 label(body, "Speed", UDim2.fromOffset(12, 58), UDim2.fromOffset(80, 16), { font = F.Medium, size = 12 })
@@ -1770,7 +1986,7 @@ do
                     size = 12,
                     align = Enum.TextXAlignment.Right,
                 })
-                slider(body, UDim2.fromOffset(12, 80), colW - 24, 16, 300, motion.flySpeed, false, function(v)
+                local speedSl = slider(body, UDim2.fromOffset(12, 80), colW - 24, 16, 300, motion.flySpeed, false, function(v)
                     motion.flySpeed = math.floor(v + 0.5)
                     speedRead.Text = tostring(motion.flySpeed)
                 end)
@@ -1780,8 +1996,17 @@ do
                     size = 12,
                     align = Enum.TextXAlignment.Right,
                 })
-                slider(body, UDim2.fromOffset(12, 122), colW - 24, 2, 60, motion.glideSink, false, function(v)
+                local sinkSl = slider(body, UDim2.fromOffset(12, 122), colW - 24, 2, 60, motion.glideSink, false, function(v)
                     motion.glideSink = math.floor(v + 0.5)
+                    sinkRead.Text = tostring(motion.glideSink)
+                end)
+                label(body, "WASD to move, Space / E up, Ctrl / Q down. Glide keeps momentum and sinks unless you climb.",
+                    UDim2.fromOffset(12, 140), UDim2.new(1, -24, 0, 34), { color = T.Muted, size = 11, wrap = true })
+                table.insert(syncers, function()
+                    mode.Set(motion.flyMode)
+                    speedSl.Set(motion.flySpeed)
+                    speedRead.Text = tostring(motion.flySpeed)
+                    sinkSl.Set(motion.glideSink)
                     sinkRead.Text = tostring(motion.glideSink)
                 end)
             end,
@@ -1797,7 +2022,7 @@ do
             end,
             build = function(body)
                 label(body, "Origin", UDim2.fromOffset(12, 6), UDim2.fromOffset(120, 16), { color = T.Muted, size = 12 })
-                dropdown(body, UDim2.fromOffset(12, 24), UDim2.fromOffset(colW - 24, 28), { "Start", "Center", "End" }, motion.tpOrigin, function(v)
+                local origin = dropdown(body, UDim2.fromOffset(12, 24), UDim2.fromOffset(colW - 24, 28), { "Start", "Center", "End" }, motion.tpOrigin, function(v)
                     motion.tpOrigin = v
                 end)
                 label(body, "Offset", UDim2.fromOffset(12, 60), UDim2.fromOffset(80, 16), { color = T.Muted, size = 12 })
@@ -1815,6 +2040,10 @@ do
                     size = 11,
                     wrap = true,
                 })
+                table.insert(syncers, function()
+                    origin.Set(motion.tpOrigin)
+                    box.Text = fmt(motion.tpOffset)
+                end)
             end,
         },
         {
@@ -1833,8 +2062,12 @@ do
                     size = 12,
                     align = Enum.TextXAlignment.Right,
                 })
-                slider(body, UDim2.fromOffset(12, 36), colW - 24, 0.05, 1, motion.clickInterval, true, function(v)
+                local sl = slider(body, UDim2.fromOffset(12, 36), colW - 24, 0.05, 1, motion.clickInterval, true, function(v)
                     motion.clickInterval = math.floor(v * 100 + 0.5) / 100
+                    read.Text = fmt(motion.clickInterval) .. "s"
+                end)
+                table.insert(syncers, function()
+                    sl.Set(motion.clickInterval)
                     read.Text = fmt(motion.clickInterval) .. "s"
                 end)
                 label(body, "Clicks the bottom-left corner, outside this window.", UDim2.fromOffset(12, 58), UDim2.new(1, -24, 0, 32), {
@@ -1850,8 +2083,54 @@ do
             desc = "Walk through parts",
             icon = "noclip",
             body = 0,
+            persist = true,
             onToggle = function(on)
                 setNoclip(on)
+            end,
+        },
+        {
+            id = "antiload",
+            name = "Anti Loading",
+            desc = "Skip Gameplay paused screens",
+            icon = "clock",
+            body = 0,
+            persist = true,
+            onToggle = function(on)
+                setAntiPause(on)
+            end,
+        },
+        {
+            id = "render",
+            name = "Render Distance",
+            desc = "Keep far content and draw farther",
+            icon = "eye",
+            body = 142,
+            persist = true,
+            onToggle = function(on)
+                setRender(on)
+            end,
+            build = function(body)
+                local rows = {
+                    { "keep", "Keep loaded", "Far parts stop unloading" },
+                    { "quality", "Max draw distance", "Highest graphics level" },
+                    { "fog", "Remove fog", "Clear fog and haze" },
+                }
+                for i, row in ipairs(rows) do
+                    local key, y = row[1], 4 + (i - 1) * 34
+                    label(body, row[2], UDim2.fromOffset(12, y), UDim2.new(1, -70, 0, 16), { font = F.Medium, size = 12 })
+                    label(body, row[3], UDim2.fromOffset(12, y + 16), UDim2.new(1, -70, 0, 14), { color = T.Muted, size = 11 })
+                    local sw = switch(body, UDim2.new(1, -54, 0, y + 4), motion.render[key], function(v)
+                        motion.render[key] = v
+                        if motion.renderOn then
+                            setRender(true)
+                        end
+                    end)
+                    table.insert(syncers, function()
+                        sw.Set(motion.render[key])
+                    end)
+                end
+                label(body, "The server decides how far content streams. This keeps what already arrived.",
+                    UDim2.fromOffset(12, 106), UDim2.new(1, -24, 0, 30), { color = T.Muted, size = 11, wrap = true })
             end,
         },
     }
@@ -1863,7 +2142,7 @@ do
 end
 
 --==============================================================================
--- 8. OBJECTS, TOUR, PRESETS, SETTINGS
+-- 8. OBJECTS, TOUR, SETTINGS
 --==============================================================================
 
 local exportScope = "Current list"
@@ -1930,7 +2209,7 @@ do
     local col3 = (PAGE_W - 24 - 16) / 3
 
     label(DefaultsCard, "Action", UDim2.fromOffset(12, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-    dropdown(DefaultsCard, UDim2.fromOffset(12, 66), UDim2.fromOffset(col3, 32), ACTIONS, D.action, function(v)
+    local defAction = dropdown(DefaultsCard, UDim2.fromOffset(12, 66), UDim2.fromOffset(col3, 32), ACTIONS, D.action, function(v)
         D.action = v
     end)
     label(DefaultsCard, "Speed (studs/s)", UDim2.fromOffset(12 + col3 + 8, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
@@ -1943,21 +2222,24 @@ do
         local x = 12 + (i - 1) * (col3 + 8)
         label(DefaultsCard, axis:upper() .. " axis" .. (axis == "y" and " (height)" or ""),
             UDim2.fromOffset(x, 108), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-        dropdown(DefaultsCard, UDim2.fromOffset(x, 124), UDim2.fromOffset(col3, 32),
+        local dd = dropdown(DefaultsCard, UDim2.fromOffset(x, 124), UDim2.fromOffset(col3, 32),
             { "Start", "Center", "End" }, D.tp[axis], function(v)
                 D.tp[axis] = v
             end)
+        table.insert(syncers, function()
+            dd.Set(D.tp[axis])
+        end)
     end
 
     local TourCard = card(pages.Tour, UDim2.fromOffset(0, 186), UDim2.fromOffset(PAGE_W, PAGE_H - 186),
         "Auto tour", "Runs each object's own action in order")
     label(TourCard, "Order", UDim2.fromOffset(12, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-    dropdown(TourCard, UDim2.fromOffset(12, 66), UDim2.fromOffset(220, 32),
+    local orderDd = dropdown(TourCard, UDim2.fromOffset(12, 66), UDim2.fromOffset(220, 32),
         { "Forward", "Reverse", "Ping-pong", "Random" }, tour.order, function(v)
             tour.order = v
         end)
     label(TourCard, "Loop forever", UDim2.fromOffset(252, 66), UDim2.fromOffset(120, 32), { font = F.Medium })
-    switch(TourCard, UDim2.fromOffset(PAGE_W - 54, 70), tour.loop, function(v)
+    local loopSw = switch(TourCard, UDim2.fromOffset(PAGE_W - 54, 70), tour.loop, function(v)
         tour.loop = v
     end)
     label(TourCard, "Default pause between steps", UDim2.fromOffset(12, 110), UDim2.fromOffset(280, 20), { font = F.Medium })
@@ -1980,57 +2262,68 @@ do
     ui.StartBtn = button(TourCard, "Start tour", UDim2.fromOffset(12, PAGE_H - 186 - 48), UDim2.fromOffset(PAGE_W - 24, 36), "primary")
     BtnApi[ui.StartBtn].label.Font = F.Bold
 
-    local ExportCard = card(pages.Presets, UDim2.fromOffset(0, 0), UDim2.fromOffset(PAGE_W, 136),
-        "Export", "Copy your lists as JSON or save them to a file")
-    segmented(ExportCard, UDim2.fromOffset(12, 52), UDim2.fromOffset(240, 30), { "Current list", "All lists" }, exportScope, function(v)
-        exportScope = v
+    table.insert(syncers, function()
+        defAction.Set(D.action)
+        ui.DefSpeedBox.Text = fmt(D.speed)
+        ui.DefOffsetBox.Text = fmt(D.offset)
+        orderDd.Set(tour.order)
+        loopSw.Set(tour.loop)
+        ui.IntervalSlider.Set(tour.interval)
+        ui.IntervalBox.Text = fmt(tour.interval)
     end)
-    local halfW = (PAGE_W - 24 - 8) / 2
-    ui.CopyBtn = button(ExportCard, "Copy to clipboard", UDim2.fromOffset(12, 92), UDim2.fromOffset(halfW, 34), "primary")
-    ui.SaveBtn = button(ExportCard, "Save to file", UDim2.fromOffset(20 + halfW, 92), UDim2.fromOffset(halfW, 34), "secondary")
 
-    local ImportCard = card(pages.Presets, UDim2.fromOffset(0, 146), UDim2.fromOffset(PAGE_W, 170),
-        "Import", "Imported lists are added next to your existing ones")
-    ui.PasteBtn = button(ImportCard, "Paste from clipboard", UDim2.fromOffset(12, 52), UDim2.fromOffset(halfW, 34), "primary")
-    ui.LoadBtn = button(ImportCard, "Load from file", UDim2.fromOffset(20 + halfW, 52), UDim2.fromOffset(halfW, 34), "secondary")
-    label(ImportCard, "Or paste JSON manually", UDim2.fromOffset(12, 98), UDim2.fromOffset(300, 14), { color = T.Muted, size = 12 })
-    ui.JsonBox = input(ImportCard, UDim2.fromOffset(12, 118), UDim2.fromOffset(PAGE_W - 24 - 96, 34), "", "Paste preset JSON here")
-    ui.JsonBox.TextTruncate = Enum.TextTruncate.AtEnd
-    ui.ImportTextBtn = button(ImportCard, "Import", UDim2.fromOffset(PAGE_W - 100, 118), UDim2.fromOffset(88, 34), "secondary")
+    ui.SettingsScroll = new("ScrollingFrame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = T.Accent,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    }, pages.Settings)
+    ui.SettingsW = PAGE_W - 10
 
-    ui.CapsLabel = label(pages.Presets, "", UDim2.fromOffset(2, 326), UDim2.fromOffset(PAGE_W, 16), { color = T.Muted, size = 12 })
-    label(pages.Presets, "Objects are saved by their path in the game plus a fallback position, so a preset works in the same game across sessions.",
-        UDim2.fromOffset(2, 346), UDim2.fromOffset(PAGE_W, 32), { color = T.Muted, size = 12, wrap = true })
-
-    local AppearanceCard = card(pages.Settings, UDim2.fromOffset(0, 0), UDim2.fromOffset(PAGE_W, 216),
-        "Appearance", "Frosted glass window")
+    local SW = ui.SettingsW
+    local AppearanceCard = card(ui.SettingsScroll, UDim2.fromOffset(0, 0), UDim2.fromOffset(SW, 226),
+        "Appearance", "Applies to the window, notifications and dialogs")
     label(AppearanceCard, "Background blur", UDim2.fromOffset(14, 54), UDim2.fromOffset(250, 24), { font = F.Medium })
-    switch(AppearanceCard, UDim2.new(1, -56, 0, 54), settings.blur, function(v)
+    local blurSw = switch(AppearanceCard, UDim2.new(1, -56, 0, 54), settings.blur, function(v)
         settings.blur = v
     end)
+    local function percent(v)
+        return string.format("%d%%", math.floor(v * 100 + 0.5))
+    end
     label(AppearanceCard, "Blur strength", UDim2.fromOffset(14, 96), UDim2.fromOffset(200, 20), { font = F.Medium })
-    local BlurValue = label(AppearanceCard, "100%", UDim2.new(1, -74, 0, 96), UDim2.fromOffset(60, 20), {
+    local BlurValue = label(AppearanceCard, percent(settings.blurStrength), UDim2.new(1, -74, 0, 96), UDim2.fromOffset(60, 20), {
         color = T.Muted,
         size = 12,
         align = Enum.TextXAlignment.Right,
     })
-    slider(AppearanceCard, UDim2.fromOffset(14, 128), PAGE_W - 28, 0.1, 1, settings.blurStrength, false, function(v)
+    local blurSl = slider(AppearanceCard, UDim2.fromOffset(14, 128), SW - 28, 0.1, 1, settings.blurStrength, false, function(v)
         settings.blurStrength = v
-        BlurValue.Text = string.format("%d%%", math.floor(v * 100 + 0.5))
+        BlurValue.Text = percent(v)
     end)
-    label(AppearanceCard, "Window opacity", UDim2.fromOffset(14, 148), UDim2.fromOffset(200, 20), { font = F.Medium })
-    local OpacityValue = label(AppearanceCard, "86%", UDim2.new(1, -74, 0, 148), UDim2.fromOffset(60, 20), {
+    label(AppearanceCard, "Opacity", UDim2.fromOffset(14, 148), UDim2.fromOffset(200, 20), { font = F.Medium })
+    local OpacityValue = label(AppearanceCard, percent(settings.opacity), UDim2.new(1, -74, 0, 148), UDim2.fromOffset(60, 20), {
         color = T.Muted,
         size = 12,
         align = Enum.TextXAlignment.Right,
     })
-    slider(AppearanceCard, UDim2.fromOffset(14, 180), PAGE_W - 28, 0.5, 1, settings.opacity, false, function(v)
+    local opacitySl = slider(AppearanceCard, UDim2.fromOffset(14, 180), SW - 28, 0.5, 1, settings.opacity, false, function(v)
         settings.opacity = v
-        OpacityValue.Text = string.format("%d%%", math.floor(v * 100 + 0.5))
-        MainFrame.BackgroundTransparency = 1 - v
+        OpacityValue.Text = percent(v)
+        applyOpacity()
     end)
-    label(pages.Settings, "Blur is a depth-of-field pass plus a glass pane fitted to this window. The panel draws above other interfaces. Turn blur off if it looks wrong. The frosted window stays.",
-        UDim2.fromOffset(2, 226), UDim2.fromOffset(PAGE_W, 48), { color = T.Muted, size = 12, wrap = true })
+    label(AppearanceCard, "Blur draws a glass pane behind each panel. Turn it off if it looks wrong.",
+        UDim2.fromOffset(14, 198), UDim2.new(1, -28, 0, 20), { color = T.Muted, size = 11 })
+
+    table.insert(syncers, function()
+        blurSw.Set(settings.blur)
+        blurSl.Set(settings.blurStrength)
+        BlurValue.Text = percent(settings.blurStrength)
+        opacitySl.Set(settings.opacity)
+        OpacityValue.Text = percent(settings.opacity)
+    end)
 end
 
 --==============================================================================
@@ -2194,6 +2487,7 @@ function setPickMode(on)
             motion.teleportOn = false
             if modUi.teleport then
                 modUi.teleport.switch.Set(false)
+                modUi.teleport.paint(false)
             end
             if pickKind == "teleport" then
                 pickKind = nil
@@ -2853,33 +3147,86 @@ function startTour()
 end
 
 do
-    local function cameraFlat()
+    local function axis(pos, neg, alt)
+        local down = UserInputService:IsKeyDown(pos) or (alt and UserInputService:IsKeyDown(alt))
+        return (down and 1 or 0) - (UserInputService:IsKeyDown(neg) and 1 or 0)
+    end
+
+    local function flyInput()
+        if UserInputService:GetFocusedTextBox() then
+            return 0, 0, 0
+        end
+        local K = Enum.KeyCode
+        local up = axis(K.Space, K.LeftControl, K.E)
+        if UserInputService:IsKeyDown(K.Q) then
+            up -= 1
+        end
+        return axis(K.W, K.S), axis(K.D, K.A), math.clamp(up, -1, 1)
+    end
+
+    local function flyBody(hrp)
+        if motion.flyVel and motion.flyVel.Parent == hrp then
+            return motion.flyVel, motion.flyGyro
+        end
+        dropFlyBody()
+        motion.flyVel = new("BodyVelocity", {
+            Name = "HarukoFly",
+            MaxForce = Vector3.one * 9e9,
+            P = 9e4,
+            Velocity = Vector3.zero,
+        }, hrp)
+        motion.flyGyro = new("BodyGyro", {
+            Name = "HarukoFlyGyro",
+            MaxTorque = Vector3.one * 9e9,
+            P = 9e4,
+            D = 600,
+            CFrame = hrp.CFrame,
+        }, hrp)
+        return motion.flyVel, motion.flyGyro
+    end
+
+    local function stepFly(dt, hrp, hum, wish)
         local cam = workspace.CurrentCamera
         if not cam then
-            return Vector3.zero
+            return
         end
+        local bv, gyro = flyBody(hrp)
         local cf = cam.CFrame
-        local look = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
-        local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
-        look = (look.Magnitude > 0.01) and look.Unit or Vector3.zero
-        right = (right.Magnitude > 0.01) and right.Unit or Vector3.zero
-        local dir = Vector3.zero
-        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-            dir += look
+        local f, r, u = flyInput()
+        local move = cf.LookVector * f + cf.RightVector * r
+        if wish then
+            local flat = Vector3.new(wish.point.X - hrp.Position.X, 0, wish.point.Z - hrp.Position.Z)
+            move = flat.Magnitude > 0.05 and flat.Unit or Vector3.zero
+        elseif move.Magnitude < 0.01 then
+            local md = hum.MoveDirection
+            move = Vector3.new(md.X, 0, md.Z)
         end
-        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-            dir -= look
+        move += Vector3.yAxis * u
+        local speed = wish and wish.speed or motion.flySpeed
+        local target = move.Magnitude > 0.01 and move.Unit * speed or Vector3.zero
+
+        local flatLook = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+        if flatLook.Magnitude < 0.01 then
+            flatLook = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
         end
-        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-            dir += right
+        local facing = CFrame.lookAt(Vector3.zero, flatLook.Unit)
+
+        if motion.flyMode == "Glide" then
+            if u <= 0 then
+                target += Vector3.new(0, -motion.glideSink, 0)
+            end
+            motion.glideVel = motion.glideVel:Lerp(target, 1 - math.exp(-2.5 * dt))
+            bv.Velocity = motion.glideVel
+            local horiz = Vector3.new(motion.glideVel.X, 0, motion.glideVel.Z)
+            if horiz.Magnitude > 2 then
+                facing = CFrame.lookAt(Vector3.zero, horiz.Unit)
+            end
+            local pitch = math.clamp(motion.glideVel.Y / math.max(speed, 1), -0.6, 0.4)
+            gyro.CFrame = CFrame.new(hrp.Position) * facing * CFrame.Angles(pitch, 0, -r * 0.45)
+        else
+            bv.Velocity = target
+            gyro.CFrame = CFrame.new(hrp.Position) * facing * CFrame.Angles(-math.rad(18) * f, 0, -math.rad(10) * r)
         end
-        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-            dir -= right
-        end
-        if dir.Magnitude > 0.05 then
-            return dir.Unit
-        end
-        return Vector3.zero
     end
 
     local function stepMotion(dt)
@@ -2890,6 +3237,9 @@ do
             applyNoclip()
         end
         if motion.suppress > 0 then
+            if motion.flyVel then
+                motion.flyVel.Velocity = Vector3.zero
+            end
             return
         end
 
@@ -2899,8 +3249,14 @@ do
         end
 
         local wish = motion.wish
-        local flying = motion.flyOn
-        if not flying and not motion.speedOn and not wish then
+        if motion.flyOn then
+            if not hum.PlatformStand then
+                hum.PlatformStand = true
+            end
+            stepFly(dt, hrp, hum, wish)
+            return
+        end
+        if not motion.speedOn and not wish then
             return
         end
 
@@ -2917,21 +3273,12 @@ do
             local flat = Vector3.new(md.X, 0, md.Z)
             if flat.Magnitude > 0.05 then
                 dir = flat.Unit
-            elseif flying then
-                dir = cameraFlat()
             end
-            speed = flying and motion.flySpeed or motion.speed
+            speed = motion.speed
         end
 
         -- Wish speed wins over the Speed module so the two do not stack.
         -- Ground steps add (speed - walk speed) because the humanoid still moves at WalkSpeed.
-        if flying then
-            local drop = (motion.flyMode == "Glide") and (-motion.glideSink * dt) or 0
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            local step = dir * speed * dt
-            hrp.CFrame = hrp.CFrame + Vector3.new(step.X, drop, step.Z)
-            return
-        end
 
         local vel = hrp.AssemblyLinearVelocity
         hrp.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
@@ -3080,24 +3427,26 @@ ui.StartBtn.Activated:Connect(function()
     end
 end)
 
-do
-    local function getClipWriter()
-        return setclipboard or toclipboard or set_clipboard
-            or (syn and syn.write_clipboard) or (Clipboard and Clipboard.set)
-    end
-
-    local function getClipReader()
-        return getclipboard or get_clipboard
-            or (syn and syn.get_clipboard) or (Clipboard and Clipboard.get)
-    end
+local function setupStorage()
+    local ROOT = "Haruko"
+    local CONFIG_DIR = ROOT .. "/configs"
+    local LOCATIONS_DIR = ROOT .. "/locations"
+    local LEGACY_LOCATIONS = ROOT .. "/locations.json"
+    local META_FILE = ROOT .. "/settings.json"
+    local canFiles = (writefile and readfile and isfile) and true or false
+    local meta = { autoload = nil, autosave = true, configs = {}, lists = {} }
+    local activeConfig, lastConfig
+    local writtenLists = {}
 
     local function clipWrite(text)
-        local fn = getClipWriter()
+        local fn = setclipboard or toclipboard or set_clipboard
+            or (syn and syn.write_clipboard) or (Clipboard and Clipboard.set)
         return fn ~= nil and (pcall(fn, text))
     end
 
     local function clipRead()
-        local fn = getClipReader()
+        local fn = getclipboard or get_clipboard
+            or (syn and syn.get_clipboard) or (Clipboard and Clipboard.get)
         if not fn then
             return nil
         end
@@ -3108,20 +3457,70 @@ do
         return nil
     end
 
-    local function yesNo(v)
-        return v and "yes" or "no"
+    local function decode(text)
+        local ok, data = pcall(function()
+            return HttpService:JSONDecode(text)
+        end)
+        return ok and type(data) == "table" and data or nil
     end
 
-    ui.CapsLabel.Text = string.format("Clipboard copy: %s   |   Clipboard paste: %s   |   Files: %s",
-        yesNo(getClipWriter() ~= nil), yesNo(getClipReader() ~= nil), yesNo(writefile ~= nil and readfile ~= nil))
-
-    local function buildExportJson()
-        local source = (exportScope == "All lists") and lists or { currentList() }
-        local out = {}
-        for _, l in ipairs(source) do
-            table.insert(out, { name = l.name, items = l.items })
+    local function ensureFolders()
+        if not (canFiles and isfolder and makefolder) then
+            return
         end
-        return HttpService:JSONEncode({ version = 4, lists = out }), #out
+        for _, dir in ipairs({ ROOT, CONFIG_DIR, LOCATIONS_DIR }) do
+            pcall(function()
+                if not isfolder(dir) then
+                    makefolder(dir)
+                end
+            end)
+        end
+    end
+
+    local function readText(path)
+        if not canFiles then
+            return nil
+        end
+        local ok, text = pcall(function()
+            return isfile(path) and readfile(path) or nil
+        end)
+        return ok and text or nil
+    end
+
+    local function writeText(path, text)
+        return canFiles and (pcall(writefile, path, text))
+    end
+
+    local function configPath(name)
+        return CONFIG_DIR .. "/" .. name .. ".json"
+    end
+
+    local function locationPath(name)
+        return LOCATIONS_DIR .. "/" .. name .. ".json"
+    end
+
+    local function listJson(dir, fallback)
+        if not (canFiles and listfiles) then
+            return fallback
+        end
+        local ok, paths = pcall(listfiles, dir)
+        if not ok or type(paths) ~= "table" then
+            return fallback
+        end
+        local names = {}
+        for _, path in ipairs(paths) do
+            local name = tostring(path):match("([^/\\]+)%.json$")
+            if name then
+                table.insert(names, name)
+            end
+        end
+        table.sort(names)
+        return names
+    end
+
+    local function cleanName(text)
+        local name = tostring(text or ""):gsub("[^%w%s%-_]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        return name:sub(1, 32)
     end
 
     local function validVec3(t)
@@ -3169,7 +3568,35 @@ do
         }
     end
 
-    local function nameTaken(name)
+    local function parseLists(data)
+        local out = {}
+        if type(data) ~= "table" or type(data.lists) ~= "table" then
+            return out
+        end
+        for _, l in ipairs(data.lists) do
+            if type(l) == "table" and type(l.name) == "string" and type(l.items) == "table" then
+                local list = newList(l.name)
+                for _, raw in ipairs(l.items) do
+                    local item = normalizeItem(raw, l.tp, l.offset)
+                    if item then
+                        table.insert(list.items, item)
+                    end
+                end
+                table.insert(out, list)
+            end
+        end
+        return out
+    end
+
+    local function encodeLists(source)
+        local out = {}
+        for _, l in ipairs(source) do
+            table.insert(out, { name = l.name, items = l.items })
+        end
+        return HttpService:JSONEncode({ version = 4, lists = out })
+    end
+
+    local function listNameTaken(name)
         for _, l in ipairs(lists) do
             if l.name == name then
                 return true
@@ -3178,106 +3605,521 @@ do
         return false
     end
 
-    local function importJson(text)
-        local ok, data = pcall(function()
-            return HttpService:JSONDecode(text)
-        end)
-        if not ok or type(data) ~= "table" or type(data.lists) ~= "table" then
-            return false, "That doesn't look like a valid preset"
+    local function importLists(text)
+        local parsed = parseLists(decode(text))
+        if #parsed == 0 then
+            return false, "No valid lists found in that text"
         end
+        local objects = 0
+        for _, list in ipairs(parsed) do
+            local base, k = list.name, 1
+            while listNameTaken(list.name) do
+                k += 1
+                list.name = string.format("%s (%d)", base, k)
+            end
+            table.insert(lists, list)
+            objects += #list.items
+        end
+        switchList(#lists)
+        return true, string.format("Imported %d list(s), %d object(s)", #parsed, objects)
+    end
 
-        local importedLists, importedItems = 0, 0
-        for _, l in ipairs(data.lists) do
-            if type(l) == "table" and type(l.name) == "string" and type(l.items) == "table" then
-                local name, k = l.name, 1
-                while nameTaken(name) do
-                    k += 1
-                    name = string.format("%s (%d)", l.name, k)
-                end
+    local function num(v, lo, hi, fallback)
+        return type(v) == "number" and math.clamp(v, lo, hi) or fallback
+    end
 
-                local list = newList(name)
-                for _, raw in ipairs(l.items) do
-                    local item = normalizeItem(raw, l.tp, l.offset)
-                    if item then
-                        table.insert(list.items, item)
-                    end
-                end
-                table.insert(lists, list)
-                importedLists += 1
-                importedItems += #list.items
+    local function oneOf(v, options, fallback)
+        return table.find(options, v) and v or fallback
+    end
+
+    local function bool(v, fallback)
+        if type(v) == "boolean" then
+            return v
+        end
+        return fallback
+    end
+
+    local function keyFromName(name)
+        if type(name) ~= "string" then
+            return nil
+        end
+        local ok, code = pcall(function()
+            return Enum.KeyCode[name]
+        end)
+        if ok and code and code ~= Enum.KeyCode.RightShift then
+            return code
+        end
+        return nil
+    end
+
+    local function snapshot()
+        local mods = {}
+        for id, mod in pairs(modUi) do
+            mods[id] = {
+                on = mod.persist and mod.switch.Get() or nil,
+                bind = mod.bind and mod.bind.Name or nil,
+            }
+        end
+        return {
+            version = 1,
+            settings = { blur = settings.blur, blurStrength = settings.blurStrength, opacity = settings.opacity },
+            modules = mods,
+            motion = {
+                speed = motion.speed,
+                flyMode = motion.flyMode,
+                flySpeed = motion.flySpeed,
+                glideSink = motion.glideSink,
+                tpOrigin = motion.tpOrigin,
+                tpOffset = motion.tpOffset,
+                clickInterval = motion.clickInterval,
+                render = motion.render,
+            },
+            defaults = { action = D.action, speed = D.speed, offset = D.offset, tp = D.tp },
+            tour = { order = tour.order, loop = tour.loop, interval = tour.interval },
+        }
+    end
+
+    local function applyConfig(cfg)
+        local s = type(cfg.settings) == "table" and cfg.settings or {}
+        local m = type(cfg.motion) == "table" and cfg.motion or {}
+        local d = type(cfg.defaults) == "table" and cfg.defaults or {}
+        local t = type(cfg.tour) == "table" and cfg.tour or {}
+        local mods = type(cfg.modules) == "table" and cfg.modules or {}
+
+        settings.blur = bool(s.blur, settings.blur)
+        settings.blurStrength = num(s.blurStrength, 0.1, 1, settings.blurStrength)
+        settings.opacity = num(s.opacity, 0.5, 1, settings.opacity)
+
+        motion.speed = num(m.speed, 16, 500, motion.speed)
+        motion.flyMode = oneOf(m.flyMode, { "Default", "Glide" }, motion.flyMode)
+        motion.flySpeed = num(m.flySpeed, 16, 300, motion.flySpeed)
+        motion.glideSink = num(m.glideSink, 2, 60, motion.glideSink)
+        motion.tpOrigin = oneOf(m.tpOrigin, { "Start", "Center", "End" }, motion.tpOrigin)
+        motion.tpOffset = num(m.tpOffset, -1000, 1000, motion.tpOffset)
+        motion.clickInterval = num(m.clickInterval, 0.05, 1, motion.clickInterval)
+        if type(m.render) == "table" then
+            for key, value in pairs(motion.render) do
+                motion.render[key] = bool(m.render[key], value)
             end
         end
 
-        if importedLists == 0 then
-            return false, "No valid lists found in that preset"
+        D.action = oneOf(d.action, ACTIONS, D.action)
+        D.speed = num(d.speed, 1, 1000, D.speed)
+        D.offset = num(d.offset, -1000, 1000, D.offset)
+        if type(d.tp) == "table" then
+            for _, axis in ipairs({ "x", "y", "z" }) do
+                if TP_SET[d.tp[axis]] then
+                    D.tp[axis] = d.tp[axis]
+                end
+            end
         end
-        switchList(#lists)
-        return true, string.format("Imported %d list(s), %d object(s)", importedLists, importedItems)
+
+        tour.order = oneOf(t.order, { "Forward", "Reverse", "Ping-pong", "Random" }, tour.order)
+        tour.loop = bool(t.loop, tour.loop)
+        tour.interval = num(t.interval, 0.02, 60, tour.interval)
+
+        for _, sync in ipairs(syncers) do
+            sync()
+        end
+        applyOpacity()
+
+        for id, mod in pairs(modUi) do
+            local saved = type(mods[id]) == "table" and mods[id] or {}
+            mod.bind = keyFromName(saved.bind)
+            mod.chip.Text = keyLabel(mod.bind)
+            if mod.persist then
+                local want = saved.on == true
+                if mod.switch.Get() ~= want then
+                    mod.switch.Set(want)
+                    mod.onToggle(want)
+                end
+            end
+        end
+        if motion.renderOn then
+            setRender(true)
+        end
     end
 
-    ui.CopyBtn.Activated:Connect(function()
-        local json, count = buildExportJson()
-        if clipWrite(json) then
-            setStatus(string.format("Copied %d list(s) to clipboard", count), "success")
-        else
-            ui.JsonBox.Text = json
-            setStatus("Clipboard not supported. JSON is in the field below.", "warn")
-        end
-    end)
+    local function saveMeta()
+        writeText(META_FILE, HttpService:JSONEncode(meta))
+    end
 
-    ui.SaveBtn.Activated:Connect(function()
-        if not writefile then
-            setStatus("File writing is not available", "error")
+    local function addToIndex(name)
+        if not table.find(meta.configs, name) then
+            table.insert(meta.configs, name)
+        end
+    end
+
+    local function saveConfig(name)
+        local json = HttpService:JSONEncode(snapshot())
+        if not writeText(configPath(name), json) then
+            return false
+        end
+        addToIndex(name)
+        activeConfig, lastConfig = name, json
+        saveMeta()
+        return true
+    end
+
+    local function loadConfig(name)
+        local data = decode(readText(configPath(name)) or "")
+        if not data then
+            return false
+        end
+        applyConfig(data)
+        activeConfig = name
+        lastConfig = HttpService:JSONEncode(snapshot())
+        return true
+    end
+
+    local function deleteConfig(name)
+        if delfile then
+            pcall(delfile, configPath(name))
+        end
+        local i = table.find(meta.configs, name)
+        if i then
+            table.remove(meta.configs, i)
+        end
+        if meta.autoload == name then
+            meta.autoload = nil
+        end
+        if activeConfig == name then
+            activeConfig = nil
+        end
+        saveMeta()
+    end
+
+    local function refreshIndex()
+        meta.configs = listJson(CONFIG_DIR, meta.configs)
+    end
+
+    local function saveLocations()
+        local used, desired, files = {}, {}, {}
+        for i, list in ipairs(lists) do
+            local base = cleanName(list.name)
+            base = base ~= "" and base or "List"
+            local name, k = base, 1
+            while used[name] do
+                k += 1
+                name = base .. " " .. k
+            end
+            used[name] = true
+            table.insert(files, name)
+            desired[name] = HttpService:JSONEncode({ version = 4, order = i, name = list.name, items = list.items })
+        end
+        for name, json in pairs(desired) do
+            if writtenLists[name] ~= json and writeText(locationPath(name), json) then
+                writtenLists[name] = json
+            end
+        end
+        for name in pairs(writtenLists) do
+            if not desired[name] then
+                if delfile then
+                    pcall(delfile, locationPath(name))
+                end
+                writtenLists[name] = nil
+            end
+        end
+        if table.concat(files, "\n") ~= table.concat(meta.lists, "\n") then
+            meta.lists = files
+            saveMeta()
+        end
+    end
+
+    local function loadLocations()
+        local found = {}
+        for _, name in ipairs(listJson(LOCATIONS_DIR, meta.lists)) do
+            local text = readText(locationPath(name))
+            local data = decode(text or "")
+            local list = data and parseLists({ lists = { data } })[1]
+            if list then
+                writtenLists[name] = text
+                table.insert(found, { list = list, order = tonumber(data.order) or math.huge })
+            end
+        end
+        table.sort(found, function(a, b)
+            return a.order < b.order
+        end)
+        local out = {}
+        for _, entry in ipairs(found) do
+            table.insert(out, entry.list)
+        end
+        if #out == 0 then
+            out = parseLists(decode(readText(LEGACY_LOCATIONS) or ""))
+            if #out > 0 and delfile then
+                task.defer(function()
+                    saveLocations()
+                    pcall(delfile, LEGACY_LOCATIONS)
+                end)
+            end
+        end
+        return out
+    end
+
+    function persistNow()
+        if not canFiles then
             return
         end
-        local json, count = buildExportJson()
-        if pcall(writefile, PRESET_FILE, json) then
-            setStatus(string.format("Saved %d list(s) to workspace/%s", count, PRESET_FILE), "success")
+        saveLocations()
+        if meta.autosave and activeConfig then
+            local json = HttpService:JSONEncode(snapshot())
+            if json ~= lastConfig and writeText(configPath(activeConfig), json) then
+                lastConfig = json
+            end
+        end
+    end
+
+    local SW = ui.SettingsW
+    local ConfigCard = card(ui.SettingsScroll, UDim2.fromOffset(0, 238), UDim2.fromOffset(SW, 300),
+        "Configs", "Modules, binds, appearance and tour. Locations are stored apart.")
+    local nameBox = input(ConfigCard, UDim2.fromOffset(12, 52), UDim2.fromOffset(SW - 256, 32), "", "Config name")
+    local saveBtn = button(ConfigCard, "Save", UDim2.fromOffset(SW - 228, 52), UDim2.fromOffset(104, 32), "primary", "check")
+    local importBtn = button(ConfigCard, "Import", UDim2.fromOffset(SW - 116, 52), UDim2.fromOffset(104, 32), "secondary", "plus")
+
+    local configList = new("ScrollingFrame", {
+        Position = UDim2.fromOffset(12, 94),
+        Size = UDim2.new(1, -24, 0, 150),
+        BackgroundColor3 = T.Dark,
+        BackgroundTransparency = 0.6,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = T.Accent,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    }, ConfigCard)
+    round(configList, 10)
+    hairline(configList, 0.94)
+    new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, configList)
+    new("UIPadding", {
+        PaddingTop = UDim.new(0, 5), PaddingBottom = UDim.new(0, 5),
+        PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 8),
+    }, configList)
+
+    label(ConfigCard, "Auto-save active config", UDim2.fromOffset(14, 254), UDim2.fromOffset(260, 20), { font = F.Medium })
+    label(ConfigCard, "Changes are written every few seconds", UDim2.fromOffset(14, 272), UDim2.fromOffset(300, 16), {
+        color = T.Muted,
+        size = 11,
+    })
+    local autosaveSw = switch(ConfigCard, UDim2.new(1, -56, 0, 258), meta.autosave, function(v)
+        meta.autosave = v
+        saveMeta()
+    end)
+
+    local renderConfigs
+
+    local function configRow(name, order)
+        local active = name == activeConfig
+        local isAuto = name == meta.autoload
+        local row = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 40),
+            BackgroundColor3 = active and T.Accent or T.White,
+            BackgroundTransparency = active and 0.84 or 0.95,
+            BorderSizePixel = 0,
+            LayoutOrder = order,
+        }, configList)
+        round(row, 8)
+        label(row, name, UDim2.fromOffset(12, 0), UDim2.new(1, -246, 1, 0), {
+            font = active and F.Bold or F.Medium,
+            truncate = Enum.TextTruncate.AtEnd,
+        })
+
+        local auto = button(row, "Autoload", UDim2.new(1, -234, 0.5, -14), UDim2.fromOffset(84, 28), isAuto and "primary" or "secondary")
+        local load = button(row, "Load", UDim2.new(1, -146, 0.5, -14), UDim2.fromOffset(64, 28), "secondary")
+        local copy = button(row, "", UDim2.new(1, -78, 0.5, -14), UDim2.fromOffset(34, 28), "secondary", "lines")
+        local del = button(row, "", UDim2.new(1, -40, 0.5, -14), UDim2.fromOffset(34, 28), "danger", "close")
+
+        auto.Activated:Connect(function()
+            meta.autoload = (not isAuto) and name or nil
+            saveMeta()
+            renderConfigs()
+            notify(isAuto and "Nothing loads on start" or (name .. " loads on start"), "info")
+        end)
+        load.Activated:Connect(function()
+            if loadConfig(name) then
+                notify("Loaded " .. name, "success")
+            else
+                notify("Couldn't read " .. name, "error")
+            end
+            renderConfigs()
+        end)
+        copy.Activated:Connect(function()
+            local text = readText(configPath(name))
+            if text and clipWrite(text) then
+                notify("Copied " .. name .. " to clipboard", "success")
+            else
+                notify("Couldn't copy " .. name, "error")
+            end
+        end)
+        del.Activated:Connect(function()
+            task.spawn(function()
+                local ok = confirm({
+                    title = "Delete config",
+                    body = "Delete " .. name .. "? Your locations stay untouched.",
+                    confirmText = "Delete",
+                    danger = true,
+                })
+                if ok then
+                    deleteConfig(name)
+                    renderConfigs()
+                    notify("Deleted " .. name, "warn")
+                end
+            end)
+        end)
+    end
+
+    function renderConfigs()
+        refreshIndex()
+        for _, child in ipairs(configList:GetChildren()) do
+            if child:IsA("GuiObject") then
+                child:Destroy()
+            end
+        end
+        if #meta.configs == 0 then
+            label(configList, canFiles and "No configs yet. Name one above and press Save."
+                or "This executor can't write files, so configs are unavailable.",
+                UDim2.new(), UDim2.new(1, 0, 0, 60), {
+                    color = T.Muted,
+                    size = 12,
+                    wrap = true,
+                    align = Enum.TextXAlignment.Center,
+                })
+            return
+        end
+        for i, name in ipairs(meta.configs) do
+            configRow(name, i)
+        end
+    end
+
+    local function uniqueConfigName(base)
+        local name, k = base, 1
+        while table.find(meta.configs, name) do
+            k += 1
+            name = string.format("%s %d", base, k)
+        end
+        return name
+    end
+
+    saveBtn.Activated:Connect(function()
+        if not canFiles then
+            notify("This executor can't write files", "error")
+            return
+        end
+        local name = cleanName(nameBox.Text)
+        if name == "" then
+            name = activeConfig
+        end
+        if not name then
+            notify("Type a config name first", "warn")
+            return
+        end
+        if saveConfig(name) then
+            if not meta.autoload then
+                meta.autoload = name
+                saveMeta()
+            end
+            nameBox.Text = ""
+            renderConfigs()
+            notify("Saved " .. name, "success")
         else
-            setStatus("Failed to write the file", "error")
+            notify("Failed to write the config", "error")
         end
     end)
 
-    ui.PasteBtn.Activated:Connect(function()
+    importBtn.Activated:Connect(function()
+        local data = decode(clipRead() or "")
+        if not data or (type(data.settings) ~= "table" and type(data.modules) ~= "table") then
+            notify("Copy a Haruko config to the clipboard first", "warn")
+            return
+        end
+        local typed = cleanName(nameBox.Text)
+        local name = uniqueConfigName(typed ~= "" and typed or "Imported")
+        if writeText(configPath(name), HttpService:JSONEncode(data)) then
+            addToIndex(name)
+            saveMeta()
+            nameBox.Text = ""
+            renderConfigs()
+            notify("Imported " .. name .. ". Press Load to apply it", "success")
+        else
+            notify("Failed to write the config", "error")
+        end
+    end)
+
+    local LocCard = card(ui.SettingsScroll, UDim2.fromOffset(0, 550), UDim2.fromOffset(SW, 140),
+        "Locations", "One shared set, saved automatically. Share it through the clipboard.")
+    segmented(LocCard, UDim2.fromOffset(12, 52), UDim2.fromOffset(240, 30), { "Current list", "All lists" }, exportScope, function(v)
+        exportScope = v
+    end)
+    local halfW = (SW - 24 - 8) / 2
+    local copyBtn = button(LocCard, "Copy to clipboard", UDim2.fromOffset(12, 92), UDim2.fromOffset(halfW, 34), "primary")
+    local pasteBtn = button(LocCard, "Paste from clipboard", UDim2.fromOffset(20 + halfW, 92), UDim2.fromOffset(halfW, 34), "secondary")
+
+    copyBtn.Activated:Connect(function()
+        local source = (exportScope == "All lists") and lists or { currentList() }
+        if clipWrite(encodeLists(source)) then
+            notify(string.format("Copied %d list(s) to clipboard", #source), "success")
+        else
+            notify("Clipboard isn't supported by this executor", "error")
+        end
+    end)
+    pasteBtn.Activated:Connect(function()
         local text = clipRead()
         if not text then
-            setStatus("Can't read the clipboard. Paste JSON into the field and press Import.", "warn")
+            notify("Can't read the clipboard", "warn")
             return
         end
-        local ok, msg = importJson(text)
-        setStatus(msg .. (ok and " from clipboard" or ""), ok and "success" or "error")
+        local ok, msg = importLists(text)
+        notify(msg, ok and "success" or "error")
     end)
 
-    ui.LoadBtn.Activated:Connect(function()
-        if not (readfile and isfile) then
-            setStatus("File reading is not available", "error")
-            return
-        end
-        if not isfile(PRESET_FILE) then
-            setStatus("File not found: workspace/" .. PRESET_FILE, "warn")
-            return
-        end
-        local ok, text = pcall(readfile, PRESET_FILE)
-        if not ok then
-            setStatus("Failed to read the file", "error")
-            return
-        end
-        local success, msg = importJson(text)
-        setStatus(msg .. (success and " from file" or ""), success and "success" or "error")
-    end)
+    local function yesNo(v)
+        return v and "yes" or "no"
+    end
+    label(ui.SettingsScroll, string.format("Files: %s   |   Clipboard: %s",
+        yesNo(canFiles), yesNo(setclipboard ~= nil or toclipboard ~= nil or (syn and syn.write_clipboard) ~= nil)),
+        UDim2.fromOffset(2, 700), UDim2.fromOffset(SW, 16), { color = T.Muted, size = 12 })
+    label(ui.SettingsScroll, "workspace/Haruko keeps one file per config in configs/ and one per list in locations/. Drop files there and they load on the next start.",
+        UDim2.fromOffset(2, 718), UDim2.fromOffset(SW, 32), { color = T.Muted, size = 12, wrap = true })
 
-    ui.ImportTextBtn.Activated:Connect(function()
-        if ui.JsonBox.Text == "" then
-            setStatus("Paste JSON into the field first", "warn")
-            return
+    ensureFolders()
+    local stored = decode(readText(META_FILE) or "") or decode(readText(ROOT .. "/meta.json") or "")
+    if stored then
+        meta.autoload = type(stored.autoload) == "string" and stored.autoload or nil
+        meta.autosave = stored.autosave ~= false
+        for _, key in ipairs({ "configs", "lists" }) do
+            for _, name in ipairs(type(stored[key]) == "table" and stored[key] or {}) do
+                if type(name) == "string" and not table.find(meta[key], name) then
+                    table.insert(meta[key], name)
+                end
+            end
         end
-        local ok, msg = importJson(ui.JsonBox.Text)
-        setStatus(msg, ok and "success" or "error")
-        if ok then
-            ui.JsonBox.Text = ""
+    end
+    refreshIndex()
+
+    local savedLists = loadLocations()
+    if #savedLists > 0 then
+        lists = savedLists
+        activeList = 1
+    end
+
+    if meta.autoload and table.find(meta.configs, meta.autoload) and loadConfig(meta.autoload) then
+        task.defer(notify, "Loaded config " .. meta.autoload, "info")
+    elseif canFiles and #meta.configs == 0 and saveConfig("Default") then
+        meta.autoload = "Default"
+        saveMeta()
+    end
+    autosaveSw.Set(meta.autosave)
+    renderConfigs()
+
+    task.spawn(function()
+        while not unloading do
+            task.wait(3)
+            if not unloading then
+                pcall(persistNow)
+            end
         end
     end)
 end
+setupStorage()
 
 local DOF
 pcall(function()
@@ -3291,49 +4133,76 @@ pcall(function()
     }, Lighting)
 end)
 
-local blurPart = new("Part", {
-    Name = "HarukoBlurPart",
-    Anchored = true,
-    CanCollide = false,
-    CanQuery = false,
-    CanTouch = false,
-    CastShadow = false,
-    Locked = true,
-    Material = Enum.Material.Glass,
-    Color = T.Dark,
-    Transparency = 0.98,
-    Size = Vector3.new(1, 1, 0.01),
-})
+local function makePane()
+    return new("Part", {
+        Name = "HarukoBlurPart",
+        Anchored = true,
+        CanCollide = false,
+        CanQuery = false,
+        CanTouch = false,
+        CastShadow = false,
+        Locked = true,
+        Material = Enum.Material.Glass,
+        Color = T.Dark,
+        Transparency = 0.98,
+        Size = Vector3.new(1, 1, 0.01),
+    })
+end
+
+local function isShown(gui)
+    local cur = gui
+    while cur and cur ~= ScreenGui do
+        if cur:IsA("GuiObject") and not cur.Visible then
+            return false
+        end
+        if cur:IsA("CanvasGroup") and cur.GroupTransparency > 0.6 then
+            return false
+        end
+        cur = cur.Parent
+    end
+    return cur == ScreenGui
+end
+
+-- ViewportPointToRay uses the same pixels as the GUI; each pane lies on a camera-space plane so it never rolls.
+local function fitPane(part, gui, inset, cam)
+    local pos, size = gui.AbsolutePosition, gui.AbsoluteSize
+    local x0, y0 = pos.X + inset, pos.Y + inset
+    local x1, y1 = pos.X + size.X - inset, pos.Y + size.Y - inset
+    local camCf = cam.CFrame
+    local depth = 0.25
+    local function at(x, y)
+        local dir = camCf:VectorToObjectSpace(cam:ViewportPointToRay(x, y, 0).Direction)
+        return dir * (depth / -dir.Z)
+    end
+    local a, b = at(x0, y0), at(x1, y1)
+    part.Size = Vector3.new(math.max(math.abs(b.X - a.X), 0.05), math.max(math.abs(b.Y - a.Y), 0.05), 0.01)
+    part.CFrame = camCf * CFrame.new((a.X + b.X) / 2, (a.Y + b.Y) / 2, -depth)
+end
 
 local function updateBlur()
     local cam = workspace.CurrentCamera
-    local shown = settings.blur and cam and MainFrame.Visible and MainFrame.GroupTransparency < 0.6
+    local any = false
+    for gui, entry in pairs(glass) do
+        if not gui.Parent then
+            if entry.part then
+                entry.part:Destroy()
+            end
+            glass[gui] = nil
+        elseif settings.blur and cam and isShown(gui) then
+            any = true
+            entry.part = entry.part or makePane()
+            if entry.part.Parent ~= cam then
+                entry.part.Parent = cam
+            end
+            fitPane(entry.part, gui, entry.radius, cam)
+        elseif entry.part then
+            entry.part.Parent = nil
+        end
+    end
     if DOF then
-        DOF.Enabled = settings.blur and MainFrame.Visible
+        DOF.Enabled = any
         DOF.NearIntensity = settings.blurStrength
     end
-    if not shown then
-        blurPart.Parent = nil
-        return
-    end
-    if blurPart.Parent ~= cam then
-        blurPart.Parent = cam
-    end
-
-    -- ViewportPointToRay uses the same pixels as the GUI. ViewportSize centering sits above the window.
-    local pos, size = MainFrame.AbsolutePosition, MainFrame.AbsoluteSize
-    local x0, y0 = pos.X + CORNER, pos.Y + CORNER
-    local x1, y1 = pos.X + size.X - CORNER, pos.Y + size.Y - CORNER
-    local cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    local depth = 0.25
-    local function at(x, y)
-        return cam:ViewportPointToRay(x, y, depth).Origin
-    end
-    local mid = cam:ViewportPointToRay(cx, cy, depth)
-    local width = math.max((at(x1, cy) - at(x0, cy)).Magnitude, 0.05)
-    local height = math.max((at(cx, y1) - at(cx, y0)).Magnitude, 0.05)
-    blurPart.Size = Vector3.new(width, height, 0.01)
-    blurPart.CFrame = CFrame.lookAt(mid.Origin, mid.Origin + mid.Direction)
 end
 
 RunService:BindToRenderStep("HarukoBlur", Enum.RenderPriority.Camera.Value + 1, updateBlur)
@@ -3363,6 +4232,7 @@ local function hideWindow(thenCall)
 end
 
 local function unload()
+    pcall(persistNow)
     unloading = true
     motion.speedOn = false
     motion.clickOn = false
@@ -3374,6 +4244,12 @@ local function unload()
     end
     if motion.noclipOn then
         setNoclip(false)
+    end
+    if motion.antiPauseOn then
+        setAntiPause(false)
+    end
+    if motion.renderOn then
+        setRender(false)
     end
     if humanoid and humanoid.Parent then
         humanoid.WalkSpeed = NORMAL_SPEED
@@ -3389,7 +4265,11 @@ local function unload()
         if DOF then
             DOF:Destroy()
         end
-        blurPart:Destroy()
+        for _, entry in pairs(glass) do
+            if entry.part then
+                entry.part:Destroy()
+            end
+        end
         HighlightFolder:Destroy()
         ScreenGui:Destroy()
     end)
@@ -3400,11 +4280,11 @@ local function clearListen(restore)
         listening = nil
         return
     end
-    local ui = modUi[listening]
+    local mod = modUi[listening]
     listening = nil
     if restore then
-        ui.chip.Text = keyLabel(ui.bind)
-        ui.chip.TextColor3 = T.Muted
+        mod.chip.Text = keyLabel(mod.bind)
+        mod.chip.TextColor3 = T.Muted
     end
 end
 
@@ -3416,10 +4296,14 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(inp, game
 
     if listening and inp.UserInputType == Enum.UserInputType.Keyboard and not UserInputService:GetFocusedTextBox() then
         local code = inp.KeyCode
-        local ui = modUi[listening]
+        local mod = modUi[listening]
         if code == Enum.KeyCode.Escape then
-            ui.bind = nil
             clearListen(true)
+            return
+        elseif code == Enum.KeyCode.Backspace then
+            mod.bind = nil
+            clearListen(true)
+            notify(mod.name .. " unbound", "info")
             return
         elseif code == Enum.KeyCode.RightShift then
             clearListen(true)
@@ -3431,8 +4315,9 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(inp, game
                     other.chip.Text = "None"
                 end
             end
-            ui.bind = code
+            mod.bind = code
             clearListen(true)
+            notify(mod.name .. " bound to " .. keyLabel(code), "success")
             return
         end
     end
@@ -3451,11 +4336,11 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(inp, game
     end
 
     if inp.UserInputType == Enum.UserInputType.Keyboard and not UserInputService:GetFocusedTextBox() then
-        for _, ui in pairs(modUi) do
-            if ui.bind and ui.bind == inp.KeyCode then
-                local nextOn = not ui.switch.Get()
-                ui.switch.Set(nextOn)
-                ui.onToggle(nextOn)
+        for _, mod in pairs(modUi) do
+            if mod.bind and mod.bind == inp.KeyCode then
+                local nextOn = not mod.switch.Get()
+                mod.switch.Set(nextOn)
+                mod.onToggle(nextOn)
             end
         end
     end
@@ -3486,6 +4371,7 @@ table.insert(connections, UserInputService.InputBegan:Connect(function(inp, game
             setStatus("Teleported to " .. target.Name, "success")
             if modUi.teleport then
                 modUi.teleport.switch.Set(false)
+                modUi.teleport.paint(false)
             end
             setTeleport(false)
         else
