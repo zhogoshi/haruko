@@ -15,7 +15,8 @@ modUi.autoexec.onToggle(true)
 assert(#__queued == 1, "auto execute should queue exactly once")
 assert(__queued[1]:find("zhogoshi/haruko", 1, true), "queued code does not load Haruko")
 
-for _, name in ipairs({ "General", "Objects", "Tour", "Settings" }) do
+assert(not pages.Tour, "Tour page should be removed")
+for _, name in ipairs({ "General", "Objects", "Settings" }) do
     showPage(name)
 end
 for _, kind in ipairs({ "info", "success", "warn", "error" }) do

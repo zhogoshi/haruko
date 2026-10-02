@@ -1486,7 +1486,6 @@ do
     local dialogGen = 0
 
     local Dimmer = new("TextButton", {
-        Size = UDim2.fromScale(1, 1),
         BackgroundColor3 = Color3.new(0, 0, 0),
         BackgroundTransparency = 1,
         Text = "",
@@ -1494,6 +1493,7 @@ do
         BorderSizePixel = 0,
         ZIndex = 1,
     }, DialogHost)
+    round(Dimmer, CORNER)
 
     local DialogCard = new("CanvasGroup", {
         AnchorPoint = Vector2.new(0.5, 0.5),
@@ -1538,6 +1538,8 @@ do
         setButtonStyle(DialogConfirm, opts.danger and "danger" or "primary")
 
         local p, s = MainFrame.AbsolutePosition, MainFrame.AbsoluteSize
+        Dimmer.Position = UDim2.fromOffset(p.X, p.Y)
+        Dimmer.Size = UDim2.fromOffset(s.X, s.Y)
         DialogCard.Position = UDim2.fromOffset(p.X + s.X / 2, p.Y + s.Y / 2)
         DialogHost.Visible = true
         Dimmer.BackgroundTransparency = 1
@@ -1714,7 +1716,6 @@ do
     local PAGE_INFO = {
         General = { "General", "Modules you can toggle and bind" },
         Objects = { "Objects", "Pick objects in the world and set an action for each" },
-        Tour = { "Tour", "Defaults for new objects and the automatic tour" },
         Settings = { "Settings", "Appearance, configs and locations" },
     }
 
@@ -1818,8 +1819,7 @@ do
 
     addPage("General", "grid", 1)
     addPage("Objects", "cube", 2)
-    addPage("Tour", "target", 3)
-    addPage("Settings", "gear", 4)
+    addPage("Settings", "gear", 3)
 end
 
 --==============================================================================
@@ -2226,13 +2226,11 @@ do
             name = "Auto Tour",
             desc = "Run the current list",
             icon = "lines",
-            body = 52,
+            body = 392,
             persist = true,
             onToggle = function(on)
                 if not on then
-                    if touring or motion.tourPending then
-                        cancelMovement("Tour stopped")
-                    end
+                    cancelMovement((touring or motion.tourPending) and "Tour stopped" or nil)
                     return
                 end
                 if touring or motion.tourPending then
@@ -2256,8 +2254,65 @@ do
                 end)
             end,
             build = function(body)
-                label(body, "Order, loop and pause live in the Tour tab. Resumes after a rejoin.",
-                    UDim2.fromOffset(12, 4), UDim2.new(1, -24, 0, 40), { color = T.Muted, size = 11, wrap = true })
+                local w = colW - 24
+                local muted = { color = T.Muted, size = 12 }
+                label(body, "Order", UDim2.fromOffset(12, 4), UDim2.fromOffset(w, 16), muted)
+                local orderDd = dropdown(body, UDim2.fromOffset(12, 22), UDim2.fromOffset(w, 28),
+                    { "Forward", "Reverse", "Ping-pong", "Random" }, tour.order, function(v)
+                        tour.order = v
+                    end)
+                label(body, "Loop forever", UDim2.fromOffset(12, 62), UDim2.fromOffset(w - 50, 20), { font = F.Medium, size = 12 })
+                local loopSw = switch(body, UDim2.new(1, -54, 0, 60), tour.loop, function(v)
+                    tour.loop = v
+                end)
+                label(body, "Pause, sec", UDim2.fromOffset(12, 96), UDim2.fromOffset(w - 70, 20), { font = F.Medium, size = 12 })
+                ui.IntervalBox = input(body, UDim2.new(1, -72, 0, 94), UDim2.fromOffset(60, 24), fmt(tour.interval), "0.5")
+                ui.IntervalBox.TextXAlignment = Enum.TextXAlignment.Center
+                ui.IntervalSlider = slider(body, UDim2.fromOffset(12, 130), w, 0.05, 5, tour.interval, true, function(v)
+                    tour.interval = math.floor(v * 100 + 0.5) / 100
+                    ui.IntervalBox.Text = fmt(tour.interval)
+                end)
+                ui.TourProgress = label(body, "Idle", UDim2.fromOffset(12, 146), UDim2.fromOffset(w, 16), {
+                    color = T.Muted,
+                    size = 11,
+                    truncate = Enum.TextTruncate.AtEnd,
+                })
+
+                label(body, "New object defaults", UDim2.fromOffset(12, 174), UDim2.fromOffset(w, 18), { font = F.Bold, size = 12 })
+                label(body, "Action", UDim2.fromOffset(12, 196), UDim2.fromOffset(w, 16), muted)
+                local defAction = dropdown(body, UDim2.fromOffset(12, 214), UDim2.fromOffset(w, 28), ACTIONS, D.action, function(v)
+                    D.action = v
+                end)
+                local half = (w - 8) / 2
+                label(body, "Speed", UDim2.fromOffset(12, 250), UDim2.fromOffset(half, 16), muted)
+                label(body, "Offset", UDim2.fromOffset(20 + half, 250), UDim2.fromOffset(half, 16), muted)
+                ui.DefSpeedBox = input(body, UDim2.fromOffset(12, 268), UDim2.fromOffset(half, 28), fmt(D.speed), "40")
+                ui.DefOffsetBox = input(body, UDim2.fromOffset(20 + half, 268), UDim2.fromOffset(half, 28), fmt(D.offset), "3")
+
+                local third = (w - 16) / 3
+                local axisDds = {}
+                for i, axis in ipairs({ "x", "y", "z" }) do
+                    local x = 12 + (i - 1) * (third + 8)
+                    label(body, axis:upper() .. " axis", UDim2.fromOffset(x, 304), UDim2.fromOffset(third, 16), muted)
+                    axisDds[axis] = dropdown(body, UDim2.fromOffset(x, 322), UDim2.fromOffset(third, 28),
+                        { "Start", "Center", "End" }, D.tp[axis], function(v)
+                            D.tp[axis] = v
+                        end)
+                end
+                ui.ApplyAllBtn = button(body, "Apply to all objects", UDim2.fromOffset(12, 358), UDim2.fromOffset(w, 28), "secondary")
+
+                table.insert(syncers, function()
+                    orderDd.Set(tour.order)
+                    loopSw.Set(tour.loop)
+                    ui.IntervalSlider.Set(tour.interval)
+                    ui.IntervalBox.Text = fmt(tour.interval)
+                    defAction.Set(D.action)
+                    ui.DefSpeedBox.Text = fmt(D.speed)
+                    ui.DefOffsetBox.Text = fmt(D.offset)
+                    for axis, dd in pairs(axisDds) do
+                        dd.Set(D.tp[axis])
+                    end
+                end)
             end,
         },
         {
@@ -2381,74 +2436,6 @@ do
     ui.EmptyLabel = label(ui.ListScroll, "This list is empty.\nPress Add and click an object in the world.",
         UDim2.new(), UDim2.new(1, 0, 0, 70),
         { color = T.Muted, size = 13, wrap = true, align = Enum.TextXAlignment.Center })
-
-    local DefaultsCard = card(pages.Tour, UDim2.fromOffset(0, 0), UDim2.fromOffset(PAGE_W, 176),
-        "New object defaults", "Applied to objects you add. Every object can override them.")
-    local col3 = (PAGE_W - 24 - 16) / 3
-
-    label(DefaultsCard, "Action", UDim2.fromOffset(12, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-    local defAction = dropdown(DefaultsCard, UDim2.fromOffset(12, 66), UDim2.fromOffset(col3, 32), ACTIONS, D.action, function(v)
-        D.action = v
-    end)
-    label(DefaultsCard, "Speed (studs/s)", UDim2.fromOffset(12 + col3 + 8, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-    ui.DefSpeedBox = input(DefaultsCard, UDim2.fromOffset(12 + col3 + 8, 66), UDim2.fromOffset(100, 32), fmt(D.speed), "40")
-    label(DefaultsCard, "Offset (studs)", UDim2.fromOffset(12 + col3 + 116, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-    ui.DefOffsetBox = input(DefaultsCard, UDim2.fromOffset(12 + col3 + 116, 66), UDim2.fromOffset(100, 32), fmt(D.offset), "3")
-    ui.ApplyAllBtn = button(DefaultsCard, "Apply to all", UDim2.fromOffset(PAGE_W - 144, 66), UDim2.fromOffset(132, 32), "secondary")
-
-    for i, axis in ipairs({ "x", "y", "z" }) do
-        local x = 12 + (i - 1) * (col3 + 8)
-        label(DefaultsCard, axis:upper() .. " axis" .. (axis == "y" and " (height)" or ""),
-            UDim2.fromOffset(x, 108), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-        local dd = dropdown(DefaultsCard, UDim2.fromOffset(x, 124), UDim2.fromOffset(col3, 32),
-            { "Start", "Center", "End" }, D.tp[axis], function(v)
-                D.tp[axis] = v
-            end)
-        table.insert(syncers, function()
-            dd.Set(D.tp[axis])
-        end)
-    end
-
-    local TourCard = card(pages.Tour, UDim2.fromOffset(0, 186), UDim2.fromOffset(PAGE_W, PAGE_H - 186),
-        "Auto tour", "Runs each object's own action in order")
-    label(TourCard, "Order", UDim2.fromOffset(12, 50), UDim2.fromOffset(150, 14), { color = T.Muted, size = 12 })
-    local orderDd = dropdown(TourCard, UDim2.fromOffset(12, 66), UDim2.fromOffset(220, 32),
-        { "Forward", "Reverse", "Ping-pong", "Random" }, tour.order, function(v)
-            tour.order = v
-        end)
-    label(TourCard, "Loop forever", UDim2.fromOffset(252, 66), UDim2.fromOffset(120, 32), { font = F.Medium })
-    local loopSw = switch(TourCard, UDim2.fromOffset(PAGE_W - 54, 70), tour.loop, function(v)
-        tour.loop = v
-    end)
-    label(TourCard, "Default pause between steps", UDim2.fromOffset(12, 110), UDim2.fromOffset(280, 20), { font = F.Medium })
-    label(TourCard, "sec", UDim2.new(1, -52, 0, 108), UDim2.fromOffset(40, 24), {
-        color = T.Muted,
-        size = 12,
-        align = Enum.TextXAlignment.Right,
-    })
-    ui.IntervalBox = input(TourCard, UDim2.new(1, -128, 0, 108), UDim2.fromOffset(72, 24), fmt(tour.interval), "0.5")
-    ui.IntervalBox.TextXAlignment = Enum.TextXAlignment.Center
-    ui.IntervalSlider = slider(TourCard, UDim2.fromOffset(14, 148), PAGE_W - 28, 0.05, 5, tour.interval, true, function(v)
-        tour.interval = math.floor(v * 100 + 0.5) / 100
-        ui.IntervalBox.Text = fmt(tour.interval)
-    end)
-    ui.TourProgress = label(TourCard, "Idle", UDim2.fromOffset(14, 168), UDim2.fromOffset(PAGE_W - 28, 16), {
-        color = T.Muted,
-        size = 12,
-        truncate = Enum.TextTruncate.AtEnd,
-    })
-    label(TourCard, "Start and stop the tour with the Auto Tour module in General.",
-        UDim2.fromOffset(14, PAGE_H - 186 - 36), UDim2.fromOffset(PAGE_W - 28, 20), { color = T.Muted, size = 12 })
-
-    table.insert(syncers, function()
-        defAction.Set(D.action)
-        ui.DefSpeedBox.Text = fmt(D.speed)
-        ui.DefOffsetBox.Text = fmt(D.offset)
-        orderDd.Set(tour.order)
-        loopSw.Set(tour.loop)
-        ui.IntervalSlider.Set(tour.interval)
-        ui.IntervalBox.Text = fmt(tour.interval)
-    end)
 
     ui.SettingsScroll = new("ScrollingFrame", {
         Size = UDim2.fromScale(1, 1),
@@ -4324,6 +4311,9 @@ local function hideWindow(thenCall)
 end
 
 local function unload()
+    if unloading then
+        return
+    end
     pcall(persistNow)
     unloading = true
     motion.speedOn = false
@@ -4355,6 +4345,7 @@ local function unload()
         ScreenGui:Destroy()
     end)
 end
+ScreenGui.Destroying:Connect(unload)
 
 local function clearListen(restore)
     if not listening or not modUi[listening] then
