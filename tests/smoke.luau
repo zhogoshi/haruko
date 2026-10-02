@@ -7,7 +7,7 @@ for _, mod in pairs(modUi) do
     mod.onToggle(true)
     mod.onToggle(false)
 end
-assert(moduleCount == 9, "expected 9 modules, got " .. moduleCount)
+assert(moduleCount == 10, "expected 10 modules, got " .. moduleCount)
 assert(#__queued == 0, "auto execute stayed queued after turning off")
 
 modUi.autoexec.onToggle(true)

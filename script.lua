@@ -147,6 +147,8 @@ local motion = {
     clickInterval = 0.15,
     noclipOn = false,
     tourPending = false,
+    reconnectOn = false,
+    reconnectDelay = 5,
     wish = nil,
     suppress = 0,
 }
@@ -353,6 +355,70 @@ local function setAutoExec(on)
         store.HarukoQueued = false
     end
     return true
+end
+
+do
+    local GuiService = game:GetService("GuiService")
+    local TeleportService = game:GetService("TeleportService")
+    local reconnecting = false
+
+    local function isDisconnect()
+        local ok, code = pcall(GuiService.GetErrorCode, GuiService)
+        if ok and typeof(code) == "EnumItem" then
+            return code.Value >= 256 and code.Value < 512
+        end
+        local okMsg, msg = pcall(GuiService.GetErrorMessage, GuiService)
+        return okMsg and type(msg) == "string" and msg ~= ""
+    end
+
+    local function reconnect()
+        if reconnecting or unloading or not motion.reconnectOn or not isDisconnect() then
+            return
+        end
+        reconnecting = true
+        local message, base
+        local function show(text)
+            if not (message and message.Parent) then
+                local promptGui = CoreGui:FindFirstChild("RobloxPromptGui")
+                message = promptGui and promptGui:FindFirstChild("ErrorMessage", true)
+                base = message and message.Text
+            end
+            if message then
+                message.Text = base .. "\n\n" .. text
+            end
+        end
+        task.spawn(function()
+            local sameServer = #Players:GetPlayers() > 1
+            while motion.reconnectOn and not unloading do
+                for left = math.floor(motion.reconnectDelay), 1, -1 do
+                    if not motion.reconnectOn or unloading then
+                        break
+                    end
+                    show(string.format("Reconnecting in %ds", left))
+                    task.wait(1)
+                end
+                if not motion.reconnectOn or unloading then
+                    break
+                end
+                show("Reconnecting...")
+                pcall(persistNow)
+                if sameServer then
+                    pcall(TeleportService.TeleportToPlaceInstance, TeleportService, game.PlaceId, game.JobId, player)
+                else
+                    pcall(TeleportService.Teleport, TeleportService, game.PlaceId, player)
+                end
+                sameServer = false
+                task.wait(10)
+            end
+            if message and message.Parent then
+                message.Text = base
+            end
+            reconnecting = false
+        end)
+    end
+
+    table.insert(connections, GuiService.ErrorMessageChanged:Connect(reconnect))
+    motion.reconnectNow = reconnect
 end
 
 local function dropFlyBody()
@@ -2215,6 +2281,38 @@ do
                     UDim2.fromOffset(12, 4), UDim2.new(1, -24, 0, 54), { color = T.Muted, size = 11, wrap = true })
             end,
         },
+        {
+            id = "reconnect",
+            name = "Auto Reconnect",
+            desc = "Rejoin after a kick or disconnect",
+            icon = "info",
+            body = 96,
+            persist = true,
+            onToggle = function(on)
+                motion.reconnectOn = on
+                if on then
+                    motion.reconnectNow()
+                end
+            end,
+            build = function(body)
+                label(body, "Delay", UDim2.fromOffset(12, 8), UDim2.fromOffset(80, 16), { font = F.Medium, size = 12 })
+                local read = label(body, motion.reconnectDelay .. "s", UDim2.new(1, -72, 0, 8), UDim2.fromOffset(60, 16), {
+                    color = T.Muted,
+                    size = 12,
+                    align = Enum.TextXAlignment.Right,
+                })
+                local sl = slider(body, UDim2.fromOffset(12, 36), colW - 24, 1, 60, motion.reconnectDelay, true, function(v)
+                    motion.reconnectDelay = math.floor(v + 0.5)
+                    read.Text = motion.reconnectDelay .. "s"
+                end)
+                table.insert(syncers, function()
+                    sl.Set(motion.reconnectDelay)
+                    read.Text = motion.reconnectDelay .. "s"
+                end)
+                label(body, "Tries the same server first. Pair with Auto Execute to reload Haruko.",
+                    UDim2.fromOffset(12, 56), UDim2.new(1, -24, 0, 32), { color = T.Muted, size = 11, wrap = true })
+            end,
+        },
     }
 
     for i, def in ipairs(moduleSpecs) do
@@ -3714,6 +3812,7 @@ local function setupStorage()
                 tpOrigin = motion.tpOrigin,
                 tpOffset = motion.tpOffset,
                 clickInterval = motion.clickInterval,
+                reconnectDelay = motion.reconnectDelay,
                 render = motion.render,
             },
             defaults = { action = D.action, speed = D.speed, offset = D.offset, tp = D.tp },
@@ -3737,6 +3836,7 @@ local function setupStorage()
         motion.tpOrigin = oneOf(m.tpOrigin, { "Start", "Center", "End" }, motion.tpOrigin)
         motion.tpOffset = num(m.tpOffset, -1000, 1000, motion.tpOffset)
         motion.clickInterval = num(m.clickInterval, 0.05, 1, motion.clickInterval)
+        motion.reconnectDelay = math.floor(num(m.reconnectDelay, 1, 60, motion.reconnectDelay))
         if type(m.render) == "table" then
             for key, value in pairs(motion.render) do
                 motion.render[key] = bool(m.render[key], value)
