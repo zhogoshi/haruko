@@ -105,10 +105,17 @@ local env = (function()
     local workspace = instance("Workspace")
     rawget(workspace, "__props").CurrentCamera = nil
 
-    local files = {}
+    local files, queued = {}, {}
 
     return setmetatable({
         __files = files,
+        __queued = queued,
+        queue_on_teleport = function(code)
+            table.insert(queued, code)
+        end,
+        clear_queue_on_teleport = function()
+            table.clear(queued)
+        end,
         game = game,
         workspace = workspace,
         Enum = magic("Enum"),

@@ -146,6 +146,7 @@ local motion = {
     clickOn = false,
     clickInterval = 0.15,
     noclipOn = false,
+    tourPending = false,
     wish = nil,
     suppress = 0,
 }
@@ -330,6 +331,28 @@ local function setRender(on)
     apply("fogEnd", Lighting, "FogEnd", 1e6, opt.fog)
     apply("fogStart", Lighting, "FogStart", 1e6, opt.fog)
     apply("haze", atmosphere, "Density", 0, opt.fog)
+end
+
+local function setAutoExec(on)
+    local queue = queue_on_teleport or queueonteleport or queueteleport
+        or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+    if not queue then
+        return false
+    end
+    local store = (getgenv and getgenv()) or shared or motion
+    if on and not store.HarukoQueued then
+        store.HarukoQueued = pcall(queue, string.format(
+            "repeat task.wait() until game:IsLoaded() loadstring(game:HttpGet(%q))()",
+            "https://raw.githubusercontent.com/zhogoshi/haruko/main/script.lua"
+        ))
+    elseif not on and store.HarukoQueued then
+        local clear = clear_queue_on_teleport or clearqueueonteleport
+        if clear then
+            pcall(clear)
+        end
+        store.HarukoQueued = false
+    end
+    return true
 end
 
 local function dropFlyBody()
@@ -2050,6 +2073,7 @@ do
             desc = "Repeat a click off this window",
             icon = "click",
             body = 96,
+            persist = true,
             onToggle = function(on)
                 motion.clickOn = on
             end,
@@ -2129,6 +2153,66 @@ do
                 end
                 label(body, "The server decides how far content streams. This keeps what already arrived.",
                     UDim2.fromOffset(12, 106), UDim2.new(1, -24, 0, 30), { color = T.Muted, size = 11, wrap = true })
+            end,
+        },
+        {
+            id = "tour",
+            name = "Auto Tour",
+            desc = "Run the current list",
+            icon = "lines",
+            body = 52,
+            persist = true,
+            onToggle = function(on)
+                if not on then
+                    if touring or motion.tourPending then
+                        cancelMovement("Tour stopped")
+                    end
+                    return
+                end
+                if touring or motion.tourPending then
+                    return
+                end
+                motion.tourPending = true
+                task.spawn(function()
+                    local waited = false
+                    while motion.tourPending and not (humanoidRootPart and humanoidRootPart.Parent) do
+                        waited = true
+                        task.wait(0.5)
+                    end
+                    if waited then
+                        task.wait(2)
+                    end
+                    if motion.tourPending then
+                        motion.tourPending = false
+                        startTour()
+                        updateTourUI()
+                    end
+                end)
+            end,
+            build = function(body)
+                label(body, "Order, loop and pause live in the Tour tab. Resumes after a rejoin.",
+                    UDim2.fromOffset(12, 4), UDim2.new(1, -24, 0, 40), { color = T.Muted, size = 11, wrap = true })
+            end,
+        },
+        {
+            id = "autoexec",
+            name = "Auto Execute",
+            desc = "Reload Haruko after a rejoin",
+            icon = "gear",
+            body = 66,
+            persist = true,
+            onToggle = function(on)
+                if not setAutoExec(on) and on then
+                    notify("This executor has no queue_on_teleport", "error")
+                    task.defer(function()
+                        modUi.autoexec.switch.Set(false)
+                        modUi.autoexec.paint(false)
+                    end)
+                end
+            end,
+            build = function(body)
+                label(body, "Server restarts and updates move you to a new server without a prompt. This queues Haruko to load there.",
+                    UDim2.fromOffset(12, 4), UDim2.new(1, -24, 0, 54), { color = T.Muted, size = 11, wrap = true })
             end,
         },
     }
@@ -2255,8 +2339,8 @@ do
         size = 12,
         truncate = Enum.TextTruncate.AtEnd,
     })
-    ui.StartBtn = button(TourCard, "Start tour", UDim2.fromOffset(12, PAGE_H - 186 - 48), UDim2.fromOffset(PAGE_W - 24, 36), "primary")
-    BtnApi[ui.StartBtn].label.Font = F.Bold
+    label(TourCard, "Start and stop the tour with the Auto Tour module in General.",
+        UDim2.fromOffset(14, PAGE_H - 186 - 36), UDim2.fromOffset(PAGE_W - 28, 20), { color = T.Muted, size = 12 })
 
     table.insert(syncers, function()
         defAction.Set(D.action)
@@ -2996,16 +3080,18 @@ local function perform(item, token, withTourGap)
 end
 
 function updateTourUI()
+    local mod = modUi.tour
+    local on = touring or motion.tourPending
+    if mod and mod.switch.Get() ~= on then
+        mod.switch.Set(on)
+        mod.paint(on)
+    end
     if touring then
-        btnText(ui.StartBtn, "Stop tour")
-        setButtonStyle(ui.StartBtn, "danger")
         ui.FooterText.Text = "Tour running"
         tween(ui.FooterText, { TextColor3 = T.Success }, 0.2)
         tween(ui.FooterDot, { BackgroundColor3 = T.Success }, 0.2)
     else
-        btnText(ui.StartBtn, "Start tour")
-        setButtonStyle(ui.StartBtn, "primary")
-        ui.FooterText.Text = "Tour idle"
+        ui.FooterText.Text = motion.tourPending and "Tour waiting" or "Tour idle"
         tween(ui.FooterText, { TextColor3 = T.Muted }, 0.2)
         tween(ui.FooterDot, { BackgroundColor3 = T.Muted }, 0.2)
         ui.TourProgress.Text = "Idle"
@@ -3016,6 +3102,7 @@ function cancelMovement(message)
     moveToken += 1
     motion.wish = nil
     touring = false
+    motion.tourPending = false
     updateTourUI()
     if message then
         setStatus(message, "info")
@@ -3396,14 +3483,6 @@ ui.IntervalBox.FocusLost:Connect(function()
     ui.IntervalBox.Text = fmt(tour.interval)
 end)
 
-ui.StartBtn.Activated:Connect(function()
-    if touring then
-        cancelMovement("Tour stopped")
-    else
-        startTour()
-    end
-end)
-
 local function setupStorage()
     local ROOT = "Haruko"
     local CONFIG_DIR = ROOT .. "/configs"
@@ -3638,7 +3717,7 @@ local function setupStorage()
                 render = motion.render,
             },
             defaults = { action = D.action, speed = D.speed, offset = D.offset, tp = D.tp },
-            tour = { order = tour.order, loop = tour.loop, interval = tour.interval },
+            tour = { order = tour.order, loop = tour.loop, interval = tour.interval, list = currentList().name },
         }
     end
 
@@ -3678,6 +3757,12 @@ local function setupStorage()
         tour.order = oneOf(t.order, { "Forward", "Reverse", "Ping-pong", "Random" }, tour.order)
         tour.loop = bool(t.loop, tour.loop)
         tour.interval = num(t.interval, 0.02, 60, tour.interval)
+        for i, list in ipairs(lists) do
+            if list.name == t.list and i ~= activeList then
+                switchList(i)
+                break
+            end
+        end
 
         for _, sync in ipairs(syncers) do
             sync()
@@ -4096,6 +4181,12 @@ local function setupStorage()
     end
     autosaveSw.Set(meta.autosave)
     renderConfigs()
+
+    table.insert(connections, player.OnTeleport:Connect(function(state)
+        if state == Enum.TeleportState.Started then
+            pcall(persistNow)
+        end
+    end))
 
     task.spawn(function()
         while not unloading do
